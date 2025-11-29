@@ -1,179 +1,191 @@
 #include "GameManager.h"
+#include <iostream>
+#include <sstream>
+#include <algorithm>
 
 using namespace chessgame::controller;
 
-void GameManager::saveState(){
-    // 保存当前状态到历史栈
-    // 注意：这里保存的是深拷贝，为了简化代码直接存储 Board 对象
-    // 优化建议：仅存储 Move 命令 (Command Pattern) 以减少内存 [cite: 51]
-    // 但为了实现完整的 save/load 状态恢复，Snapshot 方式最直观
-    GameState state(board->getSize());
-    state.board = *board; // copy
-    state.currentPlayer = currentPlayer;
-    state.passCount = passCount;
-    history.push(state);
+GameManager::GameManager() : running(false) {
+    gameFacade = std::make_unique<facade::GameFacade>();
+    gameView = std::make_unique<view::ConsoleView>();
 }
 
-GameManager::GameManager() : currentPlayer(BLACK), passCount(0), showHints(true) {
-    view = unique_ptr<GameView>(new ConsoleView()); // 默认使用控制台视图
-}
-
-void GameManager::initGame() {
+bool GameManager::initializeGame() {
+    // 选择游戏类型
     while (true) {
-        std::string typeStr = view->getUserInput("Please select the game type (1: Gomoku, 2: Go): ");
+        std::string typeStr = gameView->getUserInput("请选择游戏类型 (1: 五子棋, 2: 围棋): ");
         if (typeStr == "1" || typeStr == "2") {
-            gameType = (typeStr == "1") ? GOMOKU : GO;
-            size = (gameType == GOMOKU) ? 19 : 8;
+            GameType type = (typeStr == "1") ? GOMOKU : GO;
+            
+            // 设置棋盘大小
+            int boardSize = 0;
+            while (true) {
+                std::string sizeStr = gameView->getUserInput("请输入棋盘大小 (8-19): ");
+                try {
+                    boardSize = std::stoi(sizeStr);
+                    if (boardSize >= 8 && boardSize <= 19) break;
+                } catch(...) {
+                    gameView->showError("输入无效，请重新输入。");
+                }
+            }
+            
+            // 初始化游戏
+            if (gameFacade->initGame(type, boardSize)) {
+                return true;
+            } else {
+                gameView->showError("游戏初始化失败！");
+            }
+        } else {
+            gameView->showError("输入无效，请输入 1 或 2。");
+        }
+    }
+}
+
+std::unique_ptr<Command> GameManager::parseCommand(const std::string& input) {
+    std::istringstream iss(input);
+    std::string cmd;
+    iss >> cmd;
+    
+    // 转换为小写
+    std::transform(cmd.begin(), cmd.end(), cmd.begin(), ::tolower);
+    
+    PieceType currentPlayer = gameFacade->getCurrentPlayer();
+    
+    if (cmd == "quit") {
+        return std::make_unique<ResignCommand>(gameFacade.get(), currentPlayer);
+    } else if (cmd == "help") {
+        gameView->showHelp();
+        return nullptr;
+    } else if (cmd == "undo") {
+        return std::make_unique<UndoCommand>(gameFacade.get());
+    } else if (cmd == "pass") {
+        return std::make_unique<PassCommand>(gameFacade.get(), currentPlayer);
+    } else if (cmd == "resign") {
+        return std::make_unique<ResignCommand>(gameFacade.get(), currentPlayer);
+    } else if (cmd == "save") {
+        std::string filename;
+        iss >> filename;
+        if (filename.empty()) {
+            filename = "savegame.txt";
+        }
+        return std::make_unique<SaveCommand>(gameFacade.get(), filename);
+    } else if (cmd == "load") {
+        std::string filename;
+        iss >> filename;
+        if (filename.empty()) {
+            filename = "savegame.txt";
+        }
+        return std::make_unique<LoadCommand>(gameFacade.get(), filename);
+    } else if (cmd == "restart") {
+        return std::make_unique<RestartCommand>(gameFacade.get());
+    } else if (cmd == "hint") {
+        // 切换提示显示
+        bool showHints = gameView->getShowHints();
+        gameView->setShowHints(!showHints);
+        gameView->showHint(showHints ? "提示已隐藏" : "提示已显示");
+        return nullptr;
+    } else {
+        // 尝试解析为坐标
+        try {
+            int x, y;
+            std::istringstream coordStream(input);
+            if (coordStream >> x >> y) {
+                // 转换为0索引
+                x--;
+                y--;
+                return std::make_unique<MoveCommand>(gameFacade.get(), x, y, currentPlayer);
+            }
+        } catch(...) {
+            // 不是有效的坐标
+        }
+    }
+    gameView->showError("不合法的指令，请输入 'help' 查看用法。");
+    return nullptr;
+}
+
+bool GameManager::executeCommand(std::unique_ptr<Command> command) {
+    if (!command) {
+        return false;
+    }
+    
+    bool success = command->execute();
+    if (success) {
+        // 将命令添加到历史记录
+        commandHistory.push_back(std::move(command));
+    } else {
+        gameView->showError("命令执行失败！");
+    }
+    
+    return success;
+}
+
+void GameManager::gameLoop() {
+    running = true;
+    std::string message = "游戏开始！输入 'help' 查看指令。";
+    
+    while (running) {
+        // 显示当前游戏状态
+        gameView->displayBoard(
+            gameFacade->getBoard(), 
+            gameFacade->getCurrentPlayer(),
+            gameFacade->getGameType(),
+            message
+        );
+        
+        // 检查游戏是否结束
+        GameStatus status = gameFacade->getGameStatus();
+        if (status != IN_PROGRESS) {
+            gameView->showGameResult(status);
             break;
         }
-    }
-
-    
-
-    board = unique_ptr<Board>(new Board(size));
-    
-    // 工厂模式体现：根据类型创建规则
-    if (gameType == GOMOKU)
-        rule = unique_ptr<GameRule>(new GomokuRule(board.get()));
-    else
-        rule = unique_ptr<GameRule>(new GoRule(board.get()));
-    
-    currentPlayer = BLACK;
-    passCount = 0;
-    while(!history.empty()) history.pop(); // 清空历史
-}
-
-bool GameManager::saveGame(std::string filename) { // 
-    ofstream outfile(filename);
-    if (!outfile.is_open()) {
-        view->displayBoard(*board, currentPlayer, "Failed to save game!");
-        return false;
-    }
-    outfile << (int)gameType << " " << (int)currentPlayer << " " << passCount << std::endl;
-    outfile << board->serialize();
-    outfile.close();
-    view->displayBoard(*board, currentPlayer, "Game saved to " + filename);
-}
-
-bool GameManager::loadGame(std::string filename) { // 
-    ifstream infile(filename);
-    if (!infile.is_open()) {
-        return false;
-    }
-    int type, player;
-    infile >> type >> player >> passCount;
-    gameType = (GameType)type;
-    currentPlayer = (PieceType)player;
-    
-    std::stringstream ss;
-    ss << infile.rdbuf(); // 读取剩余内容
-    
-    // 重建对象
-    board = unique_ptr<Board>(new Board(0)); // 临时
-    board->deserialize(ss);
-    
-    if (gameType == GOMOKU)
-        rule = unique_ptr<GameRule>(new GomokuRule(board.get()));
-    else
-        rule = unique_ptr<GameRule>(new GoRule(board.get()));
         
-    return true;
-}
-
-void GameManager::startGame(GameType type, PieceType firstPlayer) {
-    initGame();
-    std::string message = "Game start! enter 'help' to check rules...";
-
-    bool running = true;
-    while (running) {
-        view->displayBoard(*board, currentPlayer, message);
         message = "";
-
-        std::string input = view->getUserInput("Enter command > ");
         
-        if (input == "quit") {
-            if(view->getUserInput("Are you sure to give up? (y/n): ") == "y") break;
-            continue;
+        // 获取用户输入
+        std::string input = gameView->getUserInput("请输入指令 > ");
+        
+        // 解析并执行命令
+        auto command = parseCommand(input);
+        if (!command) {
+            continue;  // 可能是help或hint等不需要执行的命令
         }
-        else if (input == "help") {
-            view->showHelp();
-            continue;
-        }
-        else if (input == "undo") { // 
-            if (history.empty()) {
-                message = "Cannot undo...";
-            } else {
-                GameState prev = history.top();
-                history.pop();
-                *board = prev.board;
-                currentPlayer = prev.currentPlayer;
-                passCount = prev.passCount;
-                message = "Undo one step";
-            }
-            continue;
-        }
-        else if (input.substr(0, 4) == "save") {
-            std::string fname = (input.length() > 5) ? input.substr(5) : "savegame.txt";
-            saveGame(fname);
-            continue;
-        }
-        else if (input.substr(0, 4) == "load") {
-            std::string fname = (input.length() > 5) ? input.substr(5) : "savegame.txt";
-            if(loadGame(fname)) message = "Load game success!";
-            else message = "Load game failed or file not exist";
-            continue;
-        }
-
-        // 处理落子逻辑
-        int x = -1, y = -1;
-        bool isPass = false;
-
-        if (input == "pass") { // 
-            if (gameType == GO) isPass = true;
-            else {
-                message = "Gomoku cannot pass...";
+        
+        // 检查是否是退出命令
+        if (dynamic_cast<ResignCommand*>(command.get())) {
+            std::string confirm = gameView->getUserInput("确认认输/退出吗? (y/n): ");
+            if (confirm != "y" && confirm != "Y") {
                 continue;
             }
-        } else {
-            std::stringstream ss(input);
-            if (!(ss >> x >> y)) {
-                message = "Invalid command! Please enter 'x y'.";
-                continue;
-            }
-            x--; y--; // 转换为0索引
         }
-
-        // 逻辑判断
-        if (isPass) {
-            saveState(); // 记录状态以便悔棋
-            passCount++;
-            if (passCount >= 2) { // 围棋双方连续虚着: 平局
-                view->displayBoard(*board, currentPlayer, "Go game end! Please count the score to decide the winner.");
-                running = false;
-            } else {
-                currentPlayer = (currentPlayer == BLACK) ? WHITE : BLACK;
-                message = "Player pass";
-            }
+        
+        // 执行命令
+        if (!executeCommand(std::move(command))) {
+            message = "操作失败，请重试。";
         } else {
-            if (rule->isValidMove(x, y, currentPlayer)) {
-                saveState();
-                rule->makeMove(x, y, currentPlayer);
-                passCount = 0; // 落子则重置虚着计数
-                
-                // 胜负判断
-                GameStatus status = rule->checkWin(x, y);
-                if (status != PLAYING) {
-                    view->displayBoard(*board, currentPlayer, "");
-                    if (status == BLACK_WIN) view->displayBoard(*board, currentPlayer, "Black player win!");
-                    else if (status == WHITE_WIN) view->displayBoard(*board, currentPlayer, "White player win!");
-                    else view->displayBoard(*board, currentPlayer, "Draw!");
-                    running = false;
-                } else {
-                    currentPlayer = (currentPlayer == BLACK) ? WHITE : BLACK;
-                }
-            } else {
-                message = "Invalid move! Please try again.";
+            GameStatus status = gameFacade->getGameStatus();
+            if (status != IN_PROGRESS) {
+                gameView->showGameResult(status);
+                break;
             }
         }
     }
+}
+
+void GameManager::startGame() {
+    if (initializeGame()) {
+        gameLoop();
+    }
+}
+
+void GameManager::restartGame() {
+    if (gameFacade->restartGame()) {
+        commandHistory.clear();
+        gameLoop();
+    } else {
+        gameView->showError("重新开始游戏失败！");
+    }
+}
+
+void GameManager::quitGame() {
+    running = false;
 }

@@ -20,17 +20,17 @@ bool Board::isValidBounds(int x, int y) const {
     return x >= 0 && x < size && y >= 0 && y < size;
 }
 
-PieceType Board::getPiece(int x, int y) const {
+chessgame::PieceType Board::getPiece(int x, int y) const {
     if (!isValidBounds(x, y)) return PieceType::EMPTY;
     return grid[x][y];
 }
 
-void Board::setPiece(int x, int y, PieceType p) {
+void Board::setPiece(int x, int y, chessgame::PieceType p) {
     if (isValidBounds(x, y)) grid[x][y] = p;
 }
 
 void Board::clear() {
-    for (auto& row : grid) std::fill(row.begin(), row.end(), PieceType::EMPTY);
+    for (auto& row : grid) std::fill(row.begin(), row.end(), chessgame::PieceType::EMPTY);
 }
 
 // 序列化用于存档
@@ -46,12 +46,12 @@ std::string Board::serialize() const {
 // 反序列化用于读档
 void Board::deserialize(std::stringstream& ss) {
     ss >> size;
-    grid.resize(size, std::vector<PieceType>(size));
+    grid.resize(size, std::vector<chessgame::PieceType>(size));
     int temp;
     for (int i = 0; i < size; ++i) {
         for (int j = 0; j < size; ++j) {
             ss >> temp;
-            grid[i][j] = static_cast<PieceType>(temp);
+            grid[i][j] = static_cast<chessgame::PieceType>(temp);
         }
     }
 }

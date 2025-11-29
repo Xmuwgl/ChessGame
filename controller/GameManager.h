@@ -1,33 +1,46 @@
 #pragma once
 
 #include "../utils/Type.h"
-#include <stack>
+#include "../facade/GameFacade.h"
+#include "../view/GameView.h"
+#include "Command.h"
+#include <memory>
+#include <vector>
 
 namespace chessgame::controller {
+
 class GameManager {
 private:
-    unique_ptr<Board> board;
-    unique_ptr<GameRule> rule;
-    unique_ptr<GameView> view;
+    std::unique_ptr<facade::GameFacade> gameFacade;
+    std::unique_ptr<view::GameView> gameView;
+    std::vector<std::unique_ptr<Command>> commandHistory;
     
-    PieceType currentPlayer;
-    GameType gameType;
-    int passCount; // 用于判断围棋终局: 连续两次虚着
+    bool running;
     
-    std::stack<GameState> history; // 备忘录模式: 历史记录用于悔棋
-    bool showHints;
+    // 解析用户输入并创建命令
+    std::unique_ptr<Command> parseCommand(const std::string& input);
+    
+    // 执行命令
+    bool executeCommand(std::unique_ptr<Command> command);
+    
+    // 初始化游戏
+    bool initializeGame();
+    
+    // 游戏主循环
+    void gameLoop();
 
-    void saveState();
 public:
     GameManager();
-    ~GameManager();
+    ~GameManager() = default;
     
-    void startGame(GameType type, PieceType firstPlayer);
-
-    void initGame();
-
-    bool saveGame(const std::string& filename);
-    bool loadGame(const std::string& filename);
-
+    // 开始游戏
+    void startGame();
+    
+    // 重新开始游戏
+    void restartGame();
+    
+    // 退出游戏
+    void quitGame();
 };
+
 }
