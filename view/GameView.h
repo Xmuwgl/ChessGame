@@ -20,11 +20,22 @@ public:
     
     virtual void showError(const std::string& error) = 0;
     
+    virtual void showMessage(const std::string& message) = 0;
+    
     virtual void showHint(const std::string& hint) = 0;
     
     virtual void setShowHints(bool show) = 0;
     
     virtual bool getShowHints() const = 0;
+    
+    // 显示用户信息
+    virtual void showUserInfo(const std::string& username, const std::string& message = "") = 0;
+    
+    // 显示用户战绩
+    virtual void showUserStats(const std::string& username, int totalGames, int wins, 
+                              int losses, int draws, double winRate, 
+                              int gomokuWins, int goWins, int othelloWins,
+                              int aiWins, int humanWins, int rank) = 0;
 };
 
 class ConsoleView : public GameView {
@@ -48,11 +59,22 @@ public:
     
     void showError(const std::string& error) override;
     
+    void showMessage(const std::string& message) override;
+    
     void showHint(const std::string& hint) override;
     
     void setShowHints(bool show) override { showHints = show; }
     
     bool getShowHints() const override { return showHints; }
+    
+    // 显示用户信息
+    void showUserInfo(const std::string& username, const std::string& message = "") override;
+    
+    // 显示用户战绩
+    void showUserStats(const std::string& username, int totalGames, int wins, 
+                       int losses, int draws, double winRate, 
+                       int gomokuWins, int goWins, int othelloWins,
+                       int aiWins, int humanWins, int rank) override;
 };
 
 }

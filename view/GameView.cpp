@@ -106,6 +106,47 @@ void ConsoleView::showError(const std::string& error) {
     std::cout << "错误: " << error << std::endl;
 }
 
+void ConsoleView::showMessage(const std::string& message) {
+    std::cout << message << std::endl;
+}
+
 void ConsoleView::showHint(const std::string& hint) {
     std::cout << "提示: " << hint << std::endl;
+}
+
+void ConsoleView::showUserInfo(const std::string& username, const std::string& message) {
+    std::cout << "\n===== 用户信息 =====" << std::endl;
+    std::cout << "用户名: " << username << std::endl;
+    if (!message.empty()) {
+        std::cout << message << std::endl;
+    }
+    std::cout << "====================" << std::endl;
+}
+
+void ConsoleView::showUserStats(const std::string& username, int totalGames, int wins, 
+                                int losses, int draws, double winRate, 
+                                int gomokuWins, int goWins, int othelloWins,
+                                int aiWins, int humanWins, int rank) {
+    std::cout << "\n===== 个人战绩 =====" << std::endl;
+    std::cout << "用户名: " << username << std::endl;
+    std::cout << "总游戏数: " << totalGames << std::endl;
+    std::cout << "胜利次数: " << wins << std::endl;
+    std::cout << "失败次数: " << losses << std::endl;
+    std::cout << "平局次数: " << draws << std::endl;
+    std::cout << "胜率: " << std::fixed << std::setprecision(1) << winRate << "%" << std::endl;
+    
+    std::cout << "\n按游戏类型统计:" << std::endl;
+    std::cout << "五子棋胜利: " << gomokuWins << std::endl;
+    std::cout << "围棋胜利: " << goWins << std::endl;
+    std::cout << "黑白棋胜利: " << othelloWins << std::endl;
+    
+    std::cout << "\n按对手类型统计:" << std::endl;
+    std::cout << "对AI胜利: " << aiWins << std::endl;
+    std::cout << "对人类胜利: " << humanWins << std::endl;
+    
+    if (rank > 0) {
+        std::cout << "\n当前排名: 第" << rank << "名" << std::endl;
+    }
+    
+    std::cout << "====================" << std::endl;
 }

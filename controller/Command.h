@@ -30,6 +30,10 @@ public:
     bool execute() override;
     bool undo() override;
     std::string getDescription() const override;
+    
+    int getX() const { return x; }
+    int getY() const { return y; }
+    PieceType getPlayer() const { return player; }
 };
 
 class PassCommand : public Command {
@@ -43,6 +47,8 @@ public:
     bool execute() override;
     bool undo() override;
     std::string getDescription() const override;
+    
+    PieceType getPlayer() const { return player; }
 };
 
 class UndoCommand : public Command {
@@ -64,6 +70,8 @@ public:
     bool execute() override;
     bool undo() override;
     std::string getDescription() const override;
+    
+    PieceType getPlayer() const { return player; }
 };
 
 class SaveCommand : public Command {

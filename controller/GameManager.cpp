@@ -2,20 +2,35 @@
 #include <iostream>
 #include <sstream>
 #include <algorithm>
+#include <thread>
+#include <chrono>
 
 using namespace chessgame::controller;
 
-GameManager::GameManager() : running(false) {
+GameManager::GameManager() : gameMode(GameMode::PVP), running(false), isRecording(false), 
+                              leaderboardManager(&accountManager) {
     gameFacade = std::make_unique<facade::GameFacade>();
     gameView = std::make_unique<view::ConsoleView>();
 }
 
 bool GameManager::initializeGame() {
+    // 初始化游戏模式
+    if (!initializeGameMode()) {
+        return false;
+    }
+    
     // 选择游戏类型
     while (true) {
-        std::string typeStr = gameView->getUserInput("请选择游戏类型 (1: 五子棋, 2: 围棋): ");
-        if (typeStr == "1" || typeStr == "2") {
-            GameType type = (typeStr == "1") ? GOMOKU : GO;
+        std::string typeStr = gameView->getUserInput("请选择游戏类型 (1: 五子棋, 2: 围棋, 3: 黑白棋): ");
+        if (typeStr == "1" || typeStr == "2" || typeStr == "3") {
+            GameType type;
+            if (typeStr == "1") {
+                type = GOMOKU;
+            } else if (typeStr == "2") {
+                type = GO;
+            } else {
+                type = OTHELLO;
+            }
             
             // 设置棋盘大小
             int boardSize = 0;
@@ -31,13 +46,251 @@ bool GameManager::initializeGame() {
             
             // 初始化游戏
             if (gameFacade->initGame(type, boardSize)) {
+                // 初始化AI玩家
+                initializeAIPlayers();
+                
+                // 询问是否开始录像
+                std::string recordChoice = gameView->getUserInput("是否录像? (y/n): ");
+                if (recordChoice == "y" || recordChoice == "Y") {
+                    startRecording();
+                }
+                
                 return true;
             } else {
                 gameView->showError("游戏初始化失败！");
             }
         } else {
-            gameView->showError("输入无效，请输入 1 或 2。");
+            gameView->showError("输入无效，请输入 1、2 或 3。");
         }
+    }
+}
+
+void GameManager::showAccountMenu() {
+    while (true) {
+        gameView->showMessage("\n===== 账户管理 =====");
+        
+        if (accountManager.isLoggedIn()) {
+            gameView->showMessage("当前用户: " + accountManager.getCurrentUser());
+            gameView->showMessage("1. 查看个人统计");
+            gameView->showMessage("2. 修改密码");
+            gameView->showMessage("3. 登出");
+            gameView->showMessage("4. 删除账户");
+            gameView->showMessage("5. 返回主菜单");
+        } else {
+            gameView->showMessage("1. 注册账户");
+            gameView->showMessage("2. 登录");
+            gameView->showMessage("3. 返回主菜单");
+        }
+        
+        std::string choice = gameView->getUserInput("请选择: ");
+        
+        if (accountManager.isLoggedIn()) {
+            if (choice == "1") {
+                showUserStats();
+            } else if (choice == "2") {
+                changePassword();
+            } else if (choice == "3") {
+                logout();
+            } else if (choice == "4") {
+                deleteAccount();
+            } else if (choice == "5") {
+                break;
+            } else {
+                gameView->showError("无效的选择！");
+            }
+        } else {
+            if (choice == "1") {
+                registerAccount();
+            } else if (choice == "2") {
+                login();
+            } else if (choice == "3") {
+                break;
+            } else {
+                gameView->showError("无效的选择！");
+            }
+        }
+    }
+}
+
+void GameManager::registerAccount() {
+    gameView->showMessage("\n===== 注册账户 =====");
+    
+    std::string username = gameView->getUserInput("请输入用户名: ");
+    if (username.empty()) {
+        gameView->showError("用户名不能为空！");
+        return;
+    }
+    
+    if (accountManager.userExists(username)) {
+        gameView->showError("用户名已存在！");
+        return;
+    }
+    
+    std::string password = gameView->getUserInput("请输入密码: ");
+    if (password.empty()) {
+        gameView->showError("密码不能为空！");
+        return;
+    }
+    
+    std::string confirmPassword = gameView->getUserInput("请确认密码: ");
+    if (password != confirmPassword) {
+        gameView->showError("两次输入的密码不一致！");
+        return;
+    }
+    
+    if (accountManager.registerAccount(username, password)) {
+        gameView->showHint("注册成功！");
+    } else {
+        gameView->showError("注册失败！");
+    }
+}
+
+void GameManager::login() {
+    gameView->showMessage("\n===== 登录 =====");
+    
+    std::string username = gameView->getUserInput("请输入用户名: ");
+    if (username.empty()) {
+        gameView->showError("用户名不能为空！");
+        return;
+    }
+    
+    std::string password = gameView->getUserInput("请输入密码: ");
+    if (password.empty()) {
+        gameView->showError("密码不能为空！");
+        return;
+    }
+    
+    if (accountManager.login(username, password)) {
+        gameView->showHint("登录成功！欢迎，" + username + "！");
+    } else {
+        gameView->showError("用户名或密码错误！");
+    }
+}
+
+void GameManager::logout() {
+    if (accountManager.isLoggedIn()) {
+        std::string username = accountManager.getCurrentUser();
+        accountManager.logout();
+        gameView->showHint("已成功登出，" + username + "！");
+    }
+}
+
+void GameManager::showUserStats() {
+    if (!accountManager.isLoggedIn()) {
+        gameView->showError("请先登录！");
+        return;
+    }
+    
+    auto* account = accountManager.getCurrentUserAccount();
+    if (!account) {
+        gameView->showError("获取用户信息失败！");
+        return;
+    }
+    
+    const auto& stats = account->getStats();
+    
+    // 显示最后游戏时间
+    std::string lastPlayTimeStr = "";
+    if (stats.lastPlayTime > 0) {
+        std::tm* tm = std::localtime(&stats.lastPlayTime);
+        char buffer[80];
+        std::strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", tm);
+        lastPlayTimeStr = "最后游戏时间: " + std::string(buffer);
+    }
+    
+    // 显示排名
+    leaderboardManager.updateLeaderboard();
+    int rank = leaderboardManager.getUserRank(account->getUsername());
+    
+    // 使用GameView的新方法显示用户统计
+    gameView->showUserStats(
+        account->getUsername(),
+        stats.totalGames,
+        stats.wins,
+        stats.losses,
+        stats.draws,
+        stats.winRate,
+        stats.gomokuWins,
+        stats.goWins,
+        stats.othelloWins,
+        stats.aiWins,
+        stats.humanWins,
+        rank
+    );
+    
+    // 显示最后游戏时间
+    if (!lastPlayTimeStr.empty()) {
+        gameView->showMessage(lastPlayTimeStr);
+    }
+}
+
+void GameManager::showLeaderboard() {
+    leaderboardManager.updateLeaderboard();
+    leaderboardManager.displayLeaderboard();
+}
+
+void GameManager::changePassword() {
+    if (!accountManager.isLoggedIn()) {
+        gameView->showError("请先登录！");
+        return;
+    }
+    
+    std::string username = accountManager.getCurrentUser();
+    
+    gameView->showMessage("\n===== 修改密码 =====");
+    
+    std::string oldPassword = gameView->getUserInput("请输入当前密码: ");
+    if (oldPassword.empty()) {
+        gameView->showError("密码不能为空！");
+        return;
+    }
+    
+    std::string newPassword = gameView->getUserInput("请输入新密码: ");
+    if (newPassword.empty()) {
+        gameView->showError("密码不能为空！");
+        return;
+    }
+    
+    std::string confirmPassword = gameView->getUserInput("请确认新密码: ");
+    if (newPassword != confirmPassword) {
+        gameView->showError("两次输入的密码不一致！");
+        return;
+    }
+    
+    if (accountManager.changePassword(username, oldPassword, newPassword)) {
+        gameView->showHint("密码修改成功！");
+    } else {
+        gameView->showError("密码修改失败！请检查当前密码是否正确。");
+    }
+}
+
+void GameManager::deleteAccount() {
+    if (!accountManager.isLoggedIn()) {
+        gameView->showError("请先登录！");
+        return;
+    }
+    
+    std::string username = accountManager.getCurrentUser();
+    
+    gameView->showMessage("\n===== 删除账户 =====");
+    gameView->showMessage("警告：此操作不可恢复！");
+    
+    std::string confirm = gameView->getUserInput("确定要删除账户 '" + username + "' 吗？(输入 'yes' 确认): ");
+    if (confirm != "yes") {
+        gameView->showHint("已取消删除操作。");
+        return;
+    }
+    
+    std::string password = gameView->getUserInput("请输入密码以确认删除: ");
+    if (password.empty()) {
+        gameView->showError("密码不能为空！");
+        return;
+    }
+    
+    if (accountManager.deleteAccount(username, password)) {
+        gameView->showHint("账户已成功删除！");
+    } else {
+        gameView->showError("删除失败！请检查密码是否正确。");
     }
 }
 
@@ -110,6 +363,43 @@ bool GameManager::executeCommand(std::unique_ptr<Command> command) {
     
     bool success = command->execute();
     if (success) {
+        // 如果正在录像，记录这一步
+        if (isRecording && currentRecord) {
+            // 获取移动信息
+            MoveCommand* moveCmd = dynamic_cast<MoveCommand*>(command.get());
+            PassCommand* passCmd = dynamic_cast<PassCommand*>(command.get());
+            ResignCommand* resignCmd = dynamic_cast<ResignCommand*>(command.get());
+            
+            if (moveCmd) {
+                Move move;
+                move.x = moveCmd->getX();
+                move.y = moveCmd->getY();
+                move.piece = moveCmd->getPlayer();
+                move.isPass = false;
+                move.isResign = false;
+                
+                currentRecord->addMove(move, "Move");
+            } else if (passCmd) {
+                Move move;
+                move.x = -1;
+                move.y = -1;
+                move.piece = passCmd->getPlayer();
+                move.isPass = true;
+                move.isResign = false;
+                
+                currentRecord->addMove(move, "Pass");
+            } else if (resignCmd) {
+                Move move;
+                move.x = -1;
+                move.y = -1;
+                move.piece = resignCmd->getPlayer();
+                move.isPass = false;
+                move.isResign = true;
+                
+                currentRecord->addMove(move, "Resign");
+            }
+        }
+        
         // 将命令添加到历史记录
         commandHistory.push_back(std::move(command));
     } else {
@@ -141,45 +431,123 @@ void GameManager::gameLoop() {
         
         message = "";
         
-        // 获取用户输入
-        std::string input = gameView->getUserInput("请输入指令 > ");
-        
-        // 解析并执行命令
-        auto command = parseCommand(input);
-        if (!command) {
-            continue;  // 可能是help或hint等不需要执行的命令
-        }
-        
-        // 检查是否是退出命令
-        if (dynamic_cast<ResignCommand*>(command.get())) {
-            std::string confirm = gameView->getUserInput("确认认输/退出吗? (y/n): ");
-            if (confirm != "y" && confirm != "Y") {
-                continue;
+        // 检查当前玩家是否是AI
+        if (isCurrentPlayerAI()) {
+            // AI回合
+            aiTurn();
+            
+            // 在AI对AI模式下添加延迟，使游戏过程可见
+            if (gameMode == GameMode::AIVAI) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1000));
             }
-        }
-        
-        // 执行命令
-        if (!executeCommand(std::move(command))) {
-            message = "操作失败，请重试。";
         } else {
-            GameStatus status = gameFacade->getGameStatus();
-            if (status != IN_PROGRESS) {
-                gameView->showGameResult(status);
-                break;
+            // 玩家回合
+            // 获取用户输入
+            std::string input = gameView->getUserInput("请输入指令 > ");
+            
+            // 解析并执行命令
+            auto command = parseCommand(input);
+            if (!command) {
+                continue;  // 可能是help或hint等不需要执行的命令
             }
+            
+            // 检查是否是退出命令
+            if (dynamic_cast<ResignCommand*>(command.get())) {
+                std::string confirm = gameView->getUserInput("确认认输/退出吗? (y/n): ");
+                if (confirm != "y" && confirm != "Y") {
+                    continue;
+                }
+            }
+            
+            // 执行命令
+            if (!executeCommand(std::move(command))) {
+                message = "操作失败，请重试。";
+            }
+        }
+        
+        // 检查游戏状态
+        GameStatus newStatus = gameFacade->getGameStatus();
+        if (newStatus != IN_PROGRESS) {
+            gameView->displayBoard(
+                gameFacade->getBoard(), 
+                gameFacade->getCurrentPlayer(),
+                gameFacade->getGameType(),
+                ""
+            );
+            gameView->showGameResult(newStatus);
+            break;
         }
     }
 }
 
 void GameManager::startGame() {
-    if (initializeGame()) {
-        gameLoop();
+    running = true;
+    
+    // 显示主菜单
+    while (running) {
+        gameView->showMessage("\n===== 棋类游戏系统 =====");
+        gameView->showMessage("1. 新游戏");
+        gameView->showMessage("2. 回放录像");
+        gameView->showMessage("3. 账户管理");
+        gameView->showMessage("4. 排行榜");
+        gameView->showMessage("5. 退出");
+        
+        std::string choice = gameView->getUserInput("请选择: ");
+        
+        if (choice == "1") {
+            // 新游戏模式
+            if (!initializeGame()) {
+                continue;
+            }
+            
+            // 游戏主循环
+            gameLoop();
+        } else if (choice == "2") {
+            // 回放录像模式
+            std::vector<std::string> records = recordManager.getRecordList();
+            if (records.empty()) {
+                gameView->showError("没有可用的录像文件！");
+                continue;
+            }
+            
+            // 显示录像列表
+            gameView->showMessage("可用录像文件:");
+            for (size_t i = 0; i < records.size(); i++) {
+                gameView->showMessage(std::to_string(i + 1) + ". " + records[i]);
+            }
+            
+            // 选择录像
+            std::string recordChoice = gameView->getUserInput("请选择录像文件编号: ");
+            try {
+                size_t recordIndex = std::stoul(recordChoice) - 1;
+                if (recordIndex < records.size()) {
+                    replayRecording(records[recordIndex]);
+                } else {
+                    gameView->showError("无效的选择！");
+                }
+            } catch (...) {
+                gameView->showError("输入无效！");
+            }
+        } else if (choice == "3") {
+            // 账户管理
+            showAccountMenu();
+        } else if (choice == "4") {
+            // 排行榜
+            showLeaderboard();
+        } else if (choice == "5") {
+            // 退出
+            quitGame();
+        } else {
+            gameView->showError("无效的选择！");
+        }
     }
 }
 
 void GameManager::restartGame() {
     if (gameFacade->restartGame()) {
         commandHistory.clear();
+        // 重新初始化AI玩家
+        initializeAIPlayers();
         gameLoop();
     } else {
         gameView->showError("重新开始游戏失败！");
@@ -188,4 +556,351 @@ void GameManager::restartGame() {
 
 void GameManager::quitGame() {
     running = false;
+}
+
+bool GameManager::initializeGameMode() {
+    while (true) {
+        std::string modeStr = gameView->getUserInput("请选择游戏模式 (1: 玩家对玩家, 2: 玩家对AI, 3: AI对AI): ");
+        if (modeStr == "1" || modeStr == "2" || modeStr == "3") {
+            if (modeStr == "1") {
+                gameMode = GameMode::PVP;
+            } else if (modeStr == "2") {
+                gameMode = GameMode::PVAI;
+            } else {
+                gameMode = GameMode::AIVAI;
+            }
+            return true;
+        } else {
+            gameView->showError("输入无效，请输入 1、2 或 3。");
+        }
+    }
+}
+
+void GameManager::initializeAIPlayers() {
+    // 清除旧的AI玩家
+    blackAI.reset();
+    whiteAI.reset();
+    
+    // 根据游戏模式创建AI玩家
+    if (gameMode == GameMode::PVAI || gameMode == GameMode::AIVAI) {
+        // 获取游戏类型
+        GameType gameType = gameFacade->getGameType();
+        ai::AIType aiType = (gameType == GOMOKU) ? ai::AIType::GOMOKU : 
+                            (gameType == GO) ? ai::AIType::GOMOKU : ai::AIType::OTHELLO;
+        
+        // 选择AI级别
+        ai::AILevel aiLevel = ai::AILevel::LEVEL1; // 默认为一级AI
+        
+        if (gameMode == GameMode::PVAI) {
+            // 玩家对AI模式：只有白棋是AI
+            std::string levelStr = gameView->getUserInput("请选择AI级别 (1: 随机AI, 2: 评分AI): ");
+            if (levelStr == "2") {
+                aiLevel = ai::AILevel::LEVEL2;
+            }
+            
+            whiteAI = ai::AIFactory::createAIPlayer(WHITE, aiType, aiLevel);
+        } else {
+            // AI对AI模式：两个AI
+            std::string blackLevelStr = gameView->getUserInput("请选择黑棋AI级别 (1: 随机AI, 2: 评分AI): ");
+            ai::AILevel blackLevel = (blackLevelStr == "2") ? ai::AILevel::LEVEL2 : ai::AILevel::LEVEL1;
+            
+            std::string whiteLevelStr = gameView->getUserInput("请选择白棋AI级别 (1: 随机AI, 2: 评分AI): ");
+            ai::AILevel whiteLevel = (whiteLevelStr == "2") ? ai::AILevel::LEVEL2 : ai::AILevel::LEVEL1;
+            
+            blackAI = ai::AIFactory::createAIPlayer(BLACK, aiType, blackLevel);
+            whiteAI = ai::AIFactory::createAIPlayer(WHITE, aiType, whiteLevel);
+        }
+    }
+}
+
+bool GameManager::isCurrentPlayerAI() const {
+    PieceType currentPlayer = gameFacade->getCurrentPlayer();
+    
+    if (gameMode == GameMode::PVP) {
+        return false; // 玩家对玩家模式，没有AI
+    } else if (gameMode == GameMode::PVAI) {
+        return currentPlayer == WHITE; // 玩家对AI模式，只有白棋是AI
+    } else {
+        return true; // AI对AI模式，两个都是AI
+    }
+}
+
+chessgame::ai::AIPlayer* GameManager::getCurrentAIPlayer() const {
+    PieceType currentPlayer = gameFacade->getCurrentPlayer();
+    
+    if (currentPlayer == BLACK && blackAI) {
+        return blackAI.get();
+    } else if (currentPlayer == WHITE && whiteAI) {
+        return whiteAI.get();
+    }
+    
+    return nullptr;
+}
+
+void GameManager::aiTurn() {
+    ai::AIPlayer* currentAI = getCurrentAIPlayer();
+    if (!currentAI) {
+        return;
+    }
+    
+    // 显示AI思考信息
+    gameView->showHint("AI正在思考...");
+    
+    // 获取AI的移动
+    auto boardPtr = std::shared_ptr<model::Board>(&gameFacade->getBoard(), [](model::Board*){});
+    Move aiMove = currentAI->makeMove(boardPtr);
+    
+    // 执行AI的移动
+    if (aiMove.isPass) {
+        // AI选择虚着
+        auto passCommand = std::make_unique<PassCommand>(gameFacade.get(), aiMove.piece);
+        executeCommand(std::move(passCommand));
+    } else {
+        // AI选择落子
+        auto moveCommand = std::make_unique<MoveCommand>(gameFacade.get(), aiMove.x, aiMove.y, aiMove.piece);
+        executeCommand(std::move(moveCommand));
+    }
+}
+
+void GameManager::startRecording() {
+    if (isRecording) {
+        gameView->showError("已经在录像中！");
+        return;
+    }
+    
+    // 创建新的录像
+    GameType gameType = gameFacade->getGameType();
+    int boardSize = gameFacade->getBoard().getSize();
+    
+    // 根据游戏模式设置玩家名
+    std::string blackPlayer = "Black";
+    std::string whitePlayer = "White";
+    
+    if (gameMode == GameMode::PVP) {
+        blackPlayer = "Player 1 (Black)";
+        whitePlayer = "Player 2 (White)";
+    } else if (gameMode == GameMode::PVAI) {
+        blackPlayer = "Human (Black)";
+        whitePlayer = "AI (White)";
+    } else if (gameMode == GameMode::AIVAI) {
+        blackPlayer = "AI 1 (Black)";
+        whitePlayer = "AI 2 (White)";
+    }
+    
+    currentRecord = recordManager.createRecord(gameType, boardSize, blackPlayer, whitePlayer);
+    isRecording = true;
+    
+    gameView->showHint("录像已开始");
+}
+
+void GameManager::stopRecording() {
+    if (!isRecording) {
+        gameView->showError("当前没有在录像！");
+        return;
+    }
+    
+    // 设置游戏结果
+    GameStatus status = gameFacade->getGameStatus();
+    currentRecord->setResult(status);
+    
+    isRecording = false;
+    gameView->showHint("录像已停止");
+    
+    // 询问是否保存录像
+    std::string saveChoice = gameView->getUserInput("是否保存录像? (y/n): ");
+    if (saveChoice == "y" || saveChoice == "Y") {
+        std::string filename = gameView->getUserInput("请输入录像文件名 (留空使用默认): ");
+        if (saveRecording(filename)) {
+            gameView->showHint("录像已保存");
+        } else {
+            gameView->showError("录像保存失败！");
+        }
+    }
+}
+
+bool GameManager::saveRecording(const std::string& filename) {
+    if (!currentRecord) {
+        gameView->showError("没有可保存的录像！");
+        return false;
+    }
+    
+    return recordManager.saveRecord(*currentRecord, filename);
+}
+
+bool GameManager::loadRecording(const std::string& filename) {
+    auto record = recordManager.loadRecord(filename);
+    if (!record) {
+        gameView->showError("加载录像失败！");
+        return false;
+    }
+    
+    currentRecord = std::move(record);
+    return true;
+}
+
+void GameManager::replayRecording(const std::string& filename) {
+    if (!loadRecording(filename)) {
+        return;
+    }
+    
+    // 初始化游戏以匹配录像
+    GameType gameType = currentRecord->getGameType();
+    int boardSize = currentRecord->getBoardSize();
+    
+    if (!gameFacade->initGame(gameType, boardSize)) {
+        gameView->showError("初始化游戏失败！");
+        return;
+    }
+    
+    // 开始回放
+    recording::GameReplayer replayer;
+    replayer.loadRecordObject(std::move(currentRecord));
+    replayer.startReplay();
+    
+    // 回放循环
+    while (replayer.getIsReplaying()) {
+        // 显示当前棋盘状态
+        gameView->displayBoard(
+            gameFacade->getBoard(), 
+            gameFacade->getCurrentPlayer(),
+            gameFacade->getGameType(),
+            "回放模式 - 步数: " + std::to_string(replayer.getCurrentMoveIndex()) + "/" + 
+            std::to_string(replayer.getTotalMoves())
+        );
+        
+        // 获取用户输入
+        std::string input = gameView->getUserInput("回放控制 (n: 下一步, p: 上一步, j: 跳转, q: 退出): ");
+        
+        if (input == "n") {
+            // 下一步
+            const recording::GameRecordEntry* currentMove = replayer.getCurrentMove();
+            if (currentMove) {
+                const Move& move = currentMove->move;
+                if (move.isPass) {
+                    gameFacade->passMove(move.piece);
+                } else if (move.isResign) {
+                    gameFacade->resign(move.piece);
+                } else {
+                    gameFacade->makeMove(move.x, move.y, move.piece);
+                }
+            }
+            replayer.nextMove();
+        } else if (input == "p") {
+            // 上一步
+            replayer.previousMove();
+            // 重新构建棋盘状态到当前步数
+            gameFacade->initGame(gameType, boardSize);
+            for (size_t i = 0; i < replayer.getCurrentMoveIndex(); i++) {
+                const recording::GameRecordEntry* entry = &replayer.getRecord()->getEntries()[i];
+                const Move& move = entry->move;
+                if (move.isPass) {
+                    gameFacade->passMove(move.piece);
+                } else if (move.isResign) {
+                    gameFacade->resign(move.piece);
+                } else {
+                    gameFacade->makeMove(move.x, move.y, move.piece);
+                }
+            }
+        } else if (input == "j") {
+            // 跳转到指定步数
+            std::string jumpStr = gameView->getUserInput("请输入要跳转的步数: ");
+            try {
+                size_t jumpTo = std::stoul(jumpStr);
+                if (replayer.jumpToMove(jumpTo)) {
+                    // 重新构建棋盘状态到指定步数
+                    gameFacade->initGame(gameType, boardSize);
+                    for (size_t i = 0; i < replayer.getCurrentMoveIndex(); i++) {
+                        const recording::GameRecordEntry* entry = &replayer.getRecord()->getEntries()[i];
+                        const Move& move = entry->move;
+                        if (move.isPass) {
+                            gameFacade->passMove(move.piece);
+                        } else if (move.isResign) {
+                            gameFacade->resign(move.piece);
+                        } else {
+                            gameFacade->makeMove(move.x, move.y, move.piece);
+                        }
+                    }
+                } else {
+                    gameView->showError("无效的步数！");
+                }
+            } catch (...) {
+                gameView->showError("输入无效！");
+            }
+        } else if (input == "q") {
+            // 退出回放
+            replayer.resetReplay();
+            break;
+        }
+    }
+}
+
+void GameManager::handleGameEnd(GameStatus status) {
+    std::string message;
+    
+    switch (status) {
+        case BLACK_WIN:
+            message = "黑方获胜！";
+            break;
+        case WHITE_WIN:
+            message = "白方获胜！";
+            break;
+        case TIED:
+            message = "平局！";
+            break;
+        default:
+            message = "游戏结束！";
+            break;
+    }
+    
+    gameView->showMessage(message);
+    
+    // 更新用户统计信息
+    if (accountManager.isLoggedIn()) {
+        auto* account = accountManager.getCurrentUserAccount();
+        if (account) {
+            GameType gameType = gameFacade->getGameType();
+            bool isAI = (gameMode == GameMode::PVAI || gameMode == GameMode::AIVAI);
+            
+            // 判断当前用户是否获胜
+            bool isWin = false;
+            bool isDraw = (status == TIED);
+            
+            if (!isDraw) {
+                if (gameMode == GameMode::PVP) {
+                    // PVP模式，根据当前玩家判断
+                    PieceType currentPlayer = gameFacade->getCurrentPlayer();
+                    // 游戏结束时，当前玩家是输的一方
+                    isWin = (status == BLACK_WIN && currentPlayer == WHITE) || 
+                           (status == WHITE_WIN && currentPlayer == BLACK);
+                } else if (gameMode == GameMode::PVAI) {
+                    // PVAI模式，人类是黑方
+                    isWin = (status == BLACK_WIN);
+                } else if (gameMode == GameMode::AIVAI) {
+                    // AIVAI模式，不更新统计
+                    isWin = false;
+                }
+            }
+            
+            // 更新统计
+            account->updateGameStats(isWin, isDraw, gameType, isAI);
+            
+            // 保存账户信息
+            std::string filename = accountManager.getAccountDirectory() + "/" + 
+                                  account->getUsername() + ".txt";
+            account->saveToFile(filename);
+        }
+    }
+    
+    // 如果正在录像，停止录像
+    if (isRecording) {
+        stopRecording();
+    }
+    
+    // 询问是否重新开始
+    std::string choice = gameView->getUserInput("是否重新开始游戏? (y/n): ");
+    if (choice == "y" || choice == "Y") {
+        restartGame();
+    } else {
+        quitGame();
+    }
 }

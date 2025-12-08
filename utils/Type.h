@@ -6,7 +6,7 @@ namespace chessgame {
 
 enum PieceType {EMPTY, BLACK, WHITE};
 
-enum GameType {GOMOKU, GO};
+enum GameType {GOMOKU, GO, OTHELLO};
 
 enum GameStatus {IN_PROGRESS, BLACK_WIN, WHITE_WIN, TIED};
 
@@ -43,7 +43,10 @@ struct GameState {
     GameState(int size = 0) 
         : currentPlayer(BLACK), 
           passCount(0), 
-          status(IN_PROGRESS) {}
+          status(IN_PROGRESS) 
+    {
+        (void)size; // 避免未使用参数警告
+    }
 };
 
 }
