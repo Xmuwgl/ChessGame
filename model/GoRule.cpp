@@ -4,7 +4,7 @@
 
 using namespace chessgame::model;
 
-int GoRule::getLiberties(int x, int y, PieceType color, std::vector<Point>& group) {
+int GoRule::getLiberties(int x, int y, PieceType color, std::vector<Point>& group) const {
     // 重置访问标记
     for(int i=0; i<board->getSize(); ++i)
         for(int j=0; j<board->getSize(); ++j) visited[i][j] = false;
@@ -12,7 +12,7 @@ int GoRule::getLiberties(int x, int y, PieceType color, std::vector<Point>& grou
     return countLibertiesDFS(x, y, color, group);
 }
 
-int GoRule::countLibertiesDFS(int x, int y, PieceType color, std::vector<Point>& group) {
+int GoRule::countLibertiesDFS(int x, int y, PieceType color, std::vector<Point>& group) const {
     if (!board->isValidBounds(x, y)) return 0;
     if (visited[x][y]) return 0;
     
@@ -53,7 +53,7 @@ void GoRule::capture(int x, int y, PieceType opponent) {
     }
 }
 
-bool GoRule::isValidMove(int x, int y, PieceType player) {
+bool GoRule::isValidMove(int x, int y, PieceType player) const {
     if (!board->isValidBounds(x, y)) return false;
     if (board->getPiece(x, y) != EMPTY) return false;
 

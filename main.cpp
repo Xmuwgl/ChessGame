@@ -4,7 +4,7 @@
 int main() {
     try {
         std::cout << "===== 棋类游戏系统 =====" << std::endl;
-        std::cout << "支持五子棋和围棋" << std::endl;
+        std::cout << "支持五子棋、围棋和黑白棋" << std::endl;
         std::cout << "========================" << std::endl;
         
         chessgame::controller::GameManager gameManager;

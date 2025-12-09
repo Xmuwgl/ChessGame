@@ -17,8 +17,15 @@ set(SRC
   model/Board.cpp
   model/GomokuRule.cpp
   model/GoRule.cpp
+  model/Othello.cpp
+  model/OthelloRule.cpp
   model/GameMemento.cpp
   view/GameView.cpp
+  ai/AI.cpp
+  ai/RandomAI.cpp
+  ai/HeuristicAI.cpp
+  account/AccountManager.cpp
+  recording/GameRecorder.cpp
 )
 
 add_executable(game ${SRC})

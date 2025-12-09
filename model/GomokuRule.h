@@ -6,7 +6,7 @@ public:
     GomokuRule(Board* b) : Rule(b) {}
     ~GomokuRule() = default;
 
-    bool isValidMove(int x, int y, PieceType player) override;
+    bool isValidMove(int x, int y, PieceType player) const override;
     
     void makeMove(int x, int y, PieceType player) override;
 

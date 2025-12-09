@@ -142,46 +142,70 @@ bool GameRecord::loadFromFile(const std::string& filename) {
                 recordDate = recordDate.substr(1);
             }
         } else if (key == "Move:") {
-            // 解析移动信息
+            // 解析移动信息 - 格式: Move: 0,0 Player: 1 IsPass: 0 IsResign: 0 Timestamp: 12:13:37 Note: Move
             Move move;
-            std::string playerStr, isPassStr, isResignStr, timestampStr, noteStr;
+            std::string timestampStr, noteStr;
             
-            // 读取坐标
-            std::string coordStr;
-            iss >> coordStr;
-            size_t commaPos = coordStr.find(',');
-            if (commaPos != std::string::npos) {
-                move.x = std::stoi(coordStr.substr(0, commaPos));
-                move.y = std::stoi(coordStr.substr(commaPos + 1));
-            }
+            // 读取整行内容
+            std::string remainingLine;
+            std::getline(iss, remainingLine);
             
-            // 读取其他信息
-            iss >> playerStr >> isPassStr >> isResignStr >> timestampStr;
-            std::getline(iss, noteStr);
+            // 使用字符串流来解析各个字段
+            std::istringstream fullLine(remainingLine);
+            std::string token;
             
-            // 转换
-            if (playerStr.size() > 0) {
-                move.piece = static_cast<PieceType>(std::stoi(playerStr.substr(playerStr.find(':') + 1)));
-            }
-            if (isPassStr.size() > 0) {
-                move.isPass = (std::stoi(isPassStr.substr(isPassStr.find(':') + 1)) != 0);
-            }
-            if (isResignStr.size() > 0) {
-                move.isResign = (std::stoi(isResignStr.substr(isResignStr.find(':') + 1)) != 0);
-            }
-            if (timestampStr.size() > 0) {
-                std::string timestamp = timestampStr.substr(timestampStr.find(':') + 1);
-            }
-            if (noteStr.size() > 0) {
-                std::string note = noteStr.substr(noteStr.find(':') + 1);
-                // 去除前导空格
-                if (!note.empty() && note[0] == ' ') {
-                    note = note.substr(1);
+            try {
+                // 读取坐标 "0,0"
+                if (!(fullLine >> token)) continue;
+                size_t commaPos = token.find(',');
+                if (commaPos != std::string::npos) {
+                    move.x = std::stoi(token.substr(0, commaPos));
+                    move.y = std::stoi(token.substr(commaPos + 1));
                 }
-                entries.emplace_back(move, timestampStr, note);
-            } else {
-                entries.emplace_back(move, timestampStr, "");
+                
+                // 读取 Player: 1
+                if (!(fullLine >> token)) continue;
+                if (token == "Player:") {
+                    if (!(fullLine >> token)) continue;
+                    move.piece = static_cast<PieceType>(std::stoi(token));
+                }
+                
+                // 读取 IsPass: 0
+                if (!(fullLine >> token)) continue;
+                if (token == "IsPass:") {
+                    if (!(fullLine >> token)) continue;
+                    move.isPass = (std::stoi(token) != 0);
+                }
+                
+                // 读取 IsResign: 0
+                if (!(fullLine >> token)) continue;
+                if (token == "IsResign:") {
+                    if (!(fullLine >> token)) continue;
+                    move.isResign = (std::stoi(token) != 0);
+                }
+                
+                // 读取 Timestamp: 12:13:37
+                if (!(fullLine >> token)) continue;
+                if (token == "Timestamp:") {
+                    if (!(fullLine >> timestampStr)) continue;
+                }
+                
+                // 读取 Note: Move
+                if (!(fullLine >> token)) continue;
+                if (token == "Note:") {
+                    std::getline(fullLine, noteStr);
+                    // 去除前导空格
+                    if (!noteStr.empty() && noteStr[0] == ' ') {
+                        noteStr = noteStr.substr(1);
+                    }
+                }
+                
+            } catch (const std::exception& e) {
+                // 如果解析失败，跳过此行
+                continue;
             }
+            
+            entries.emplace_back(move, timestampStr, noteStr);
         }
     }
     

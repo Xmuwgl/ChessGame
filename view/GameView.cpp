@@ -40,7 +40,12 @@ std::string ConsoleView::getPlayerName(PieceType player) const {
 }
 
 std::string ConsoleView::getGameName(GameType gameType) const {
-    return (gameType == GOMOKU) ? "GOMOKU" : "GO";
+    switch (gameType) {
+        case GOMOKU: return "GOMOKU";
+        case GO: return "GO";
+        case OTHELLO: return "OTHELLO";
+        default: return "UNKNOWN";
+    }
 }
 
 void ConsoleView::displayBoard(const model::Board& board, PieceType currentPlayer, 

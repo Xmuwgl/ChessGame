@@ -1,6 +1,7 @@
 #include "GameFacade.h"
 #include "../model/GomokuRule.h"
 #include "../model/GoRule.h"
+#include "../model/OthelloRule.h"
 #include <fstream>
 #include <sstream>
 #include <queue>
@@ -14,10 +15,19 @@ GameFacade::GameFacade()
 }
 
 void GameFacade::initRule() {
-    if (gameType == GOMOKU) {
-        rule = std::make_unique<GomokuRule>(board.get());
-    } else if (gameType == GO) {
-        rule = std::make_unique<GoRule>(board.get());
+    switch (gameType) {
+        case GOMOKU:
+            rule = std::make_unique<GomokuRule>(board.get());
+            break;
+        case GO:
+            rule = std::make_unique<GoRule>(board.get());
+            break;
+        case OTHELLO:
+            rule = std::make_unique<OthelloRule>(board.get());
+            break;
+        default:
+            rule = std::make_unique<GomokuRule>(board.get());
+            break;
     }
 }
 
@@ -33,6 +43,15 @@ bool GameFacade::initGame(GameType type, int boardSize) {
     currentPlayer = BLACK;
     gameStatus = IN_PROGRESS;
     passCount = 0;
+    
+    // 为 Othello 设置初始棋子
+    if (type == OTHELLO && boardSize == 8) {
+        // 棋盘中心4个位置初始为黑白相间
+        board->setPiece(3, 3, WHITE);
+        board->setPiece(3, 4, BLACK);
+        board->setPiece(4, 3, BLACK);
+        board->setPiece(4, 4, WHITE);
+    }
     
     // 清空历史记录
     caretaker->clearHistory();

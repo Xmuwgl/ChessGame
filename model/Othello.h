@@ -6,6 +6,17 @@
 namespace chessgame::model {
 
 class Othello : public AbstractGame {
+private:
+    GameStatus status{IN_PROGRESS};
+    PieceType winner{EMPTY};
+    
+    // 黑白棋特有辅助方法
+    bool checkDirection(int x, int y, int dx, int dy, PieceType player) const;
+    std::vector<Point> getFlippedPieces(int x, int y, PieceType player) const;
+    void flipPieces(const std::vector<Point>& pieces);
+    bool hasValidMoves(PieceType player) const;
+    void updateGameStatus();
+
 public:
     Othello();
     ~Othello() override = default;
@@ -29,17 +40,6 @@ public:
     bool isValidMove(int x, int y, PieceType player) const;
     std::vector<Point> getValidMoves(PieceType player) const;
     int countPieces(PieceType player) const;
-    
-private:
-    GameStatus status{IN_PROGRESS};
-    PieceType winner{EMPTY};
-    
-    // 黑白棋特有辅助方法
-    bool checkDirection(int x, int y, int dx, int dy, PieceType player) const;
-    std::vector<Point> getFlippedPieces(int x, int y, PieceType player) const;
-    void flipPieces(const std::vector<Point>& pieces);
-    bool hasValidMoves(PieceType player) const;
-    void updateGameStatus();
 };
 
 }

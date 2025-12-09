@@ -3,7 +3,7 @@
 
 using namespace chessgame::model;
 
-bool GomokuRule::isValidMove(int x, int y, PieceType player) {
+bool GomokuRule::isValidMove(int x, int y, PieceType player) const {
     return board->isValidBounds(x, y) && board->getPiece(x, y) == EMPTY;
 }
 
