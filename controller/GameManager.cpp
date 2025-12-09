@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <thread>
 #include <chrono>
+#include <filesystem>
+#include <iomanip>
 
 using namespace chessgame::controller;
 
@@ -419,7 +421,11 @@ void GameManager::gameLoop() {
             gameFacade->getBoard(), 
             gameFacade->getCurrentPlayer(),
             gameFacade->getGameType(),
-            message
+            message,
+            getPlayerName(BLACK),
+            getPlayerName(WHITE),
+            getPlayerStats(BLACK),
+            getPlayerStats(WHITE)
         );
         
         // 检查游戏是否结束
@@ -473,7 +479,11 @@ void GameManager::gameLoop() {
                 gameFacade->getBoard(), 
                 gameFacade->getCurrentPlayer(),
                 gameFacade->getGameType(),
-                ""
+                "",
+                getPlayerName(BLACK),
+                getPlayerName(WHITE),
+                getPlayerStats(BLACK),
+                getPlayerStats(WHITE)
             );
             gameView->showGameResult(newStatus);
             handleGameEnd(newStatus);
@@ -509,8 +519,8 @@ void GameManager::startGame() {
             // 游戏主循环
             gameLoop();
         } else if (choice == "2") {
-            // 回放录像模式
-            std::vector<std::string> records = recordManager.getRecordList();
+            // 获取用户相关的录像列表
+        std::vector<std::string> records = getUserRecordList();
             if (records.empty()) {
                 gameView->showError("没有可用的录像文件!");
                 continue;
@@ -698,6 +708,74 @@ chessgame::ai::AIPlayer* GameManager::getCurrentAIPlayer() const {
     return nullptr;
 }
 
+std::string GameManager::getPlayerName(PieceType player) const {
+    std::string playerName;
+    
+    if (gameMode == GameMode::PVP) {
+        // 玩家对玩家模式
+        if (accountManager.isLoggedIn()) {
+            // 如果有登录用户，显示用户名
+            if (player == BLACK) {
+                playerName = accountManager.getCurrentUser() + " (黑棋)";
+            } else {
+                playerName = accountManager.getCurrentUser() + " (白棋)";
+            }
+        } else {
+            // 游客模式
+            if (player == BLACK) {
+                playerName = "游客A (黑棋)";
+            } else {
+                playerName = "游客B (白棋)";
+            }
+        }
+    } else if (gameMode == GameMode::PVAI) {
+        // 玩家对AI模式
+        if (player == BLACK) {
+            if (accountManager.isLoggedIn()) {
+                playerName = accountManager.getCurrentUser() + " (黑棋)";
+            } else {
+                playerName = "游客 (黑棋)";
+            }
+        } else {
+            playerName = "AI (白棋)";
+        }
+    } else if (gameMode == GameMode::AIVAI) {
+        // AI对AI模式
+        if (player == BLACK) {
+            playerName = "AI 1 (黑棋)";
+        } else {
+            playerName = "AI 2 (白棋)";
+        }
+    }
+    
+    return playerName;
+}
+
+std::string GameManager::getPlayerStats(PieceType player) const {
+    if (gameMode == GameMode::AIVAI) {
+        return ""; // AI不显示战绩
+    }
+    
+    // 只有在PVP模式下的非AI玩家，或者PVA模式下的人类玩家才显示战绩
+    if ((gameMode == GameMode::PVP) || 
+        (gameMode == GameMode::PVAI && player == BLACK)) {
+        
+        if (accountManager.isLoggedIn()) {
+            const account::UserAccount* account = accountManager.getCurrentUserAccount();
+            if (account) {
+                const account::GameStats& stats = account->getStats();
+                std::ostringstream oss;
+                oss << "战绩: " << stats.wins << "胜" << stats.losses << "负" 
+                    << stats.draws << "平 (胜率: " << std::fixed << std::setprecision(1) 
+                    << stats.winRate << "%)";
+                return oss.str();
+            }
+        }
+    }
+    
+    return ""; // 游客或AI不显示战绩
+}
+
 void GameManager::aiTurn() {
     ai::AIPlayer* currentAI = getCurrentAIPlayer();
     if (!currentAI) {
@@ -785,7 +863,77 @@ bool GameManager::saveRecording(const std::string& filename) {
         return false;
     }
     
-    return recordManager.saveRecord(*currentRecord, filename);
+    // 根据用户登录状态确定保存路径
+    std::string savePath = filename;
+    if (savePath.empty()) {
+        // 如果用户已登录，保存到用户目录
+        if (accountManager.isLoggedIn()) {
+            std::string userDir = recordManager.getRecordDirectory() + "/" + 
+                                 accountManager.getCurrentUser();
+            // 确保用户目录存在
+            if (!std::filesystem::exists(userDir)) {
+                std::filesystem::create_directories(userDir);
+            }
+            // 生成默认文件名
+            auto now = std::time(nullptr);
+            auto tm = *std::localtime(&now);
+            std::ostringstream oss;
+            oss << std::put_time(&tm, "%Y%m%d_%H%M%S");
+            
+            std::string gameTypeStr;
+            switch (currentRecord->getGameType()) {
+                case GOMOKU: gameTypeStr = "Gomoku"; break;
+                case GO: gameTypeStr = "Go"; break;
+                case OTHELLO: gameTypeStr = "Othello"; break;
+                default: gameTypeStr = "Unknown"; break;
+            }
+            
+            savePath = userDir + "/" + gameTypeStr + "_" + oss.str() + ".txt";
+        }
+    }
+    
+    bool success = recordManager.saveRecord(*currentRecord, savePath);
+    
+    // 如果保存成功且用户已登录，将录像添加到用户的保存列表
+    if (success && accountManager.isLoggedIn()) {
+        account::UserAccount* account = accountManager.getCurrentUserAccount();
+        if (account) {
+            // 提取文件名（不包含路径）
+            std::filesystem::path filePath(savePath);
+            account->addSavedGame(filePath.filename().string());
+            
+            // 保存账户信息
+            std::string accountFile = accountManager.getAccountDirectory() + "/" + 
+                                    account->getUsername() + ".txt";
+            account->saveToFile(accountFile);
+        }
+    }
+    
+    return success;
+}
+
+std::vector<std::string> GameManager::getUserRecordList() const {
+    std::vector<std::string> records;
+    
+    // 始终显示公共录像（包括游客的录像）
+    std::vector<std::string> publicRecords = recordManager.getRecordList();
+    records.insert(records.end(), publicRecords.begin(), publicRecords.end());
+    
+    // 如果用户已登录，也显示用户的个人录像
+    if (accountManager.isLoggedIn()) {
+        std::string userDir = recordManager.getRecordDirectory() + "/" + 
+                             accountManager.getCurrentUser();
+        
+        if (std::filesystem::exists(userDir)) {
+            for (const auto& entry : std::filesystem::directory_iterator(userDir)) {
+                if (entry.is_regular_file() && entry.path().extension() == ".txt") {
+                    records.push_back(entry.path().string());
+                }
+            }
+        }
+    }
+    
+    return records;
 }
 
 bool GameManager::loadRecording(const std::string& filename) {
@@ -826,7 +974,8 @@ void GameManager::replayRecording(const std::string& filename) {
             gameFacade->getCurrentPlayer(),
             gameFacade->getGameType(),
             "回放模式 - 步数: " + std::to_string(replayer.getCurrentMoveIndex()) + "/" + 
-            std::to_string(replayer.getTotalMoves())
+            std::to_string(replayer.getTotalMoves()),
+            "", "", "", ""
         );
         
         // 获取用户输入

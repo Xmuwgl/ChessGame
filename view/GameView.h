@@ -10,7 +10,11 @@ public:
     virtual ~GameView() = default;
     
     virtual void displayBoard(const model::Board& board, PieceType currentPlayer, 
-                             GameType gameType, const std::string& message = "") = 0;
+                             GameType gameType, const std::string& message = "",
+                             const std::string& blackPlayerName = "", 
+                             const std::string& whitePlayerName = "",
+                             const std::string& blackPlayerStats = "",
+                             const std::string& whitePlayerStats = "") = 0;
     
     virtual std::string getUserInput(const std::string& prompt) = 0;
     
@@ -51,7 +55,11 @@ public:
     ConsoleView();
     
     void displayBoard(const model::Board& board, PieceType currentPlayer, 
-                     GameType gameType, const std::string& message = "") override;
+                     GameType gameType, const std::string& message = "",
+                     const std::string& blackPlayerName = "", 
+                     const std::string& whitePlayerName = "",
+                     const std::string& blackPlayerStats = "",
+                     const std::string& whitePlayerStats = "") override;
     
     std::string getUserInput(const std::string& prompt) override;
     

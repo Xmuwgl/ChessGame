@@ -49,13 +49,36 @@ std::string ConsoleView::getGameName(GameType gameType) const {
 }
 
 void ConsoleView::displayBoard(const model::Board& board, PieceType currentPlayer, 
-                              GameType gameType, const std::string& message) {
+                              GameType gameType, const std::string& message,
+                              const std::string& blackPlayerName, 
+                              const std::string& whitePlayerName,
+                              const std::string& blackPlayerStats,
+                              const std::string& whitePlayerStats) {
     clearScreen();
     
     int size = board.getSize();
     
     // 显示标题
     std::cout << "===== " << getGameName(gameType) << " =====" << std::endl;
+    
+    // 显示玩家信息
+    if (!blackPlayerName.empty()) {
+        std::cout << "黑棋: " << blackPlayerName;
+        if (!blackPlayerStats.empty()) {
+            std::cout << " | " << blackPlayerStats;
+        }
+        std::cout << std::endl;
+    }
+    
+    if (!whitePlayerName.empty()) {
+        std::cout << "白棋: " << whitePlayerName;
+        if (!whitePlayerStats.empty()) {
+            std::cout << " | " << whitePlayerStats;
+        }
+        std::cout << std::endl;
+    }
+    
+    std::cout << std::endl;
     
     // 显示列号
     std::cout << "   ";
@@ -75,11 +98,11 @@ void ConsoleView::displayBoard(const model::Board& board, PieceType currentPlaye
     }
     
     std::cout << "-----------------------------------" << std::endl;
-    std::cout << "Current Player: " << getPlayerName(currentPlayer) << std::endl;
+    std::cout << "当前玩家: " << getPlayerName(currentPlayer) << std::endl;
     
-    if (!message.empty()) std::cout << "Tips: " << message << std::endl;
+    if (!message.empty()) std::cout << "提示: " << message << std::endl;
     // 显示操作提示
-    if (showHints) std::cout << "Enter 'help' to show instructions" << std::endl;
+    if (showHints) std::cout << "输入 'help' 查看指令" << std::endl;
 }
 
 std::string ConsoleView::getUserInput(const std::string& prompt) {

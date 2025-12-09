@@ -70,6 +70,12 @@ private:
     // 获取当前AI玩家
     ai::AIPlayer* getCurrentAIPlayer() const;
     
+    // 获取玩家名称
+    std::string getPlayerName(PieceType player) const;
+    
+    // 获取玩家战绩信息
+    std::string getPlayerStats(PieceType player) const;
+    
     // 开始录像
     void startRecording();
     
@@ -84,6 +90,9 @@ private:
     
     // 回放录像
     void replayRecording(const std::string& filename);
+    
+    // 获取用户相关的录像列表
+    std::vector<std::string> getUserRecordList() const;
     
     // 账户管理
     void showAccountMenu();
