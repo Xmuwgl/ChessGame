@@ -26,11 +26,18 @@ set(SRC
   ai/HeuristicAI.cpp
   account/AccountManager.cpp
   recording/GameRecorder.cpp
+  network/NetworkProtocol.cpp
+  network/NetworkServer.cpp
+  network/NetworkClient.cpp
 )
 
 add_executable(game ${SRC})
 
 target_compile_options(game PRIVATE -Wall -Wextra)
+
+# 链接pthread库用于网络功能
+find_package(Threads REQUIRED)
+target_link_libraries(game Threads::Threads)
 
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
   target_compile_options(game PRIVATE -O2)

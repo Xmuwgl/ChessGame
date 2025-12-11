@@ -72,6 +72,9 @@ public:
     // 获取游戏类型
     GameType getGameType() const { return gameType; }
     
+    // 设置游戏类型
+    void setGameType(GameType type) { gameType = type; }
+    
     // 获取棋盘
     const model::Board& getBoard() const { return *board; }
     

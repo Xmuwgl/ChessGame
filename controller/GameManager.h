@@ -7,6 +7,9 @@
 #include "../ai/AI.h"
 #include "../recording/GameRecorder.h"
 #include "../account/AccountManager.h"
+#include "../network/NetworkServer.h"
+#include "../network/NetworkClient.h"
+#include "../network/NetworkProtocol.h"
 #include <memory>
 #include <vector>
 
@@ -16,7 +19,8 @@ namespace chessgame::controller {
 enum class GameMode {
     PVP,    // 玩家对玩家
     PVAI,   // 玩家对AI
-    AIVAI   // AI对AI
+    AIVAI,  // AI对AI
+    NETWORK // 网络对战
 };
 
 class GameManager {
@@ -40,6 +44,13 @@ private:
     // 账户相关
     account::AccountManager accountManager;
     account::LeaderboardManager leaderboardManager;
+    
+    // 网络相关
+    std::unique_ptr<network::NetworkServer> networkServer;
+    std::unique_ptr<network::NetworkClient> networkClient;
+    bool isHost;
+    bool isNetworkGame;
+    int networkPlayerType; // 1: 黑棋, 2: 白棋
     
     bool running;
     
@@ -103,6 +114,22 @@ private:
     void showLeaderboard();
     void changePassword();
     void deleteAccount();
+    
+    // 网络对战菜单
+    void showNetworkMenu();
+    
+    // 网络游戏主循环
+    void networkGameLoop();
+    
+    // 网络相关方法
+    void startNetworkServer();
+    void connectToServer(const std::string& serverIP);
+    void handleNetworkMessage(int clientSocket, const network::NetworkMessage& message);
+    void handleClientMessage(const network::NetworkMessage& message);
+    void sendNetworkMove(int row, int col);
+    void sendGameState();
+    void syncGameState(const network::GameStateInfo& state);
+    void handleNetworkDisconnection();
 
 public:
     GameManager();
