@@ -15,6 +15,7 @@ private:
     int clientSocket;
     std::atomic<bool> connected;
     std::atomic<bool> running;
+    std::atomic<bool> connectResponseReceived;
     std::thread receiveThread;
     
     // 回调函数

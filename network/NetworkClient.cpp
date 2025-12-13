@@ -2,14 +2,19 @@
 #include <iostream>
 #include <cstring>
 #include <chrono>
+#include <fstream>
+#include <ctime>
+#include <cerrno>
 
 namespace chessgame::network {
 
-NetworkClient::NetworkClient() : clientSocket(-1), connected(false), running(false), heartbeatRunning(false) {
+NetworkClient::NetworkClient() : clientSocket(-1), connected(false), running(false), connectResponseReceived(false), heartbeatRunning(false) {
 }
 
 NetworkClient::~NetworkClient() {
+    std::cout << "[DEBUG] NetworkClient::~NetworkClient() called." << std::endl;
     disconnect();
+    std::cout << "[DEBUG] NetworkClient::~NetworkClient() finished." << std::endl;
 }
 
 bool NetworkClient::connect(const std::string& serverIP, int port) {
@@ -41,20 +46,40 @@ bool NetworkClient::connect(const std::string& serverIP, int port) {
         return false;
     }
     
-    // 等待服务器确认
-    NetworkMessage response = receiveMessage();
-    if (response.type != MessageType::CONNECT_RESPONSE || response.data != "OK") {
-        std::cerr << "服务器连接确认失败" << std::endl;
+    // 先设置连接状态和启动接收线程
+    // 这样接收线程可以立即开始接收消息（包括CONNECT_RESPONSE和后续消息）
+    connectResponseReceived = false;
+    connected = true;
+    running = true;
+    
+    // 启动接收消息线程（它会接收所有消息，包括CONNECT_RESPONSE）
+    receiveThread = std::thread(&NetworkClient::receiveMessages, this);
+    
+    // 等待接收线程接收CONNECT_RESPONSE消息
+    // 最多等待2秒
+    int waitCount = 0;
+    const int maxWait = 20; // 20 * 100ms = 2秒
+    
+    std::cout << "等待服务器连接确认..." << std::endl;
+    
+    while (waitCount < maxWait && !connectResponseReceived.load()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        waitCount++;
+    }
+    
+    if (!connectResponseReceived.load()) {
+        std::cerr << "服务器连接确认超时" << std::endl;
+        running = false;
+        connected = false;
+        if (receiveThread.joinable()) {
+            receiveThread.join();
+        }
         close(clientSocket);
         clientSocket = -1;
         return false;
     }
     
-    connected = true;
-    running = true;
-    
-    // 启动接收消息线程
-    receiveThread = std::thread(&NetworkClient::receiveMessages, this);
+    std::cout << "服务器连接确认成功" << std::endl;
     
     // 启动心跳线程
     startHeartbeat();
@@ -70,37 +95,58 @@ bool NetworkClient::connect(const std::string& serverIP, int port) {
 }
 
 void NetworkClient::disconnect() {
-    if (!connected.load()) return;
+    std::cout << "[DEBUG] NetworkClient::disconnect() called." << std::endl;
+    if (!connected.load()) {
+        std::cout << "[DEBUG] NetworkClient::disconnect() - Not connected, returning." << std::endl;
+        return;
+    }
     
-    // 发送断开连接消息
-    NetworkMessage disconnectMsg(MessageType::DISCONNECT, "BYE");
-    sendMessage(disconnectMsg);
-    
-    connected = false;
+    // 先设置标志位，避免发送消息时的问题
+    bool wasConnected = connected.exchange(false);
     running = false;
     heartbeatRunning = false;
     
-    // 等待线程结束
-    if (receiveThread.joinable()) {
-        receiveThread.join();
+    std::cout << "[DEBUG] NetworkClient::disconnect() - Flags set: connected=" << connected.load() 
+              << ", running=" << running.load() << ", heartbeatRunning=" << heartbeatRunning.load() << std::endl;
+
+    // 发送断开连接消息（仅当之前连接时）
+    if (wasConnected) {
+        NetworkMessage disconnectMsg(MessageType::DISCONNECT, "BYE");
+        std::cout << "[DEBUG] NetworkClient::disconnect() - Sending DISCONNECT message." << std::endl;
+        sendMessageInternal(disconnectMsg);
     }
     
-    if (heartbeatThread.joinable()) {
-        heartbeatThread.join();
-    }
-    
-    // 关闭socket
+    // 先关闭socket，以中断阻塞的recv调用
     if (clientSocket >= 0) {
+        std::cout << "[DEBUG] NetworkClient::disconnect() - Shutting down and closing socket: " << clientSocket << std::endl;
+        shutdown(clientSocket, SHUT_RDWR);
         close(clientSocket);
         clientSocket = -1;
     }
     
+    // 等待线程结束
+    if (receiveThread.joinable()) {
+        std::cout << "[DEBUG] NetworkClient::disconnect() - Joining receiveThread." << std::endl;
+        receiveThread.join();
+        receiveThread = std::thread(); // Reset thread object
+        std::cout << "[DEBUG] NetworkClient::disconnect() - receiveThread joined and reset." << std::endl;
+    } else {
+        std::cout << "[DEBUG] NetworkClient::disconnect() - receiveThread not joinable." << std::endl;
+    }
+    
+    if (heartbeatThread.joinable()) {
+        std::cout << "[DEBUG] NetworkClient::disconnect() - Joining heartbeatThread." << std::endl;
+        heartbeatThread.join();
+        heartbeatThread = std::thread(); // Reset thread object
+        std::cout << "[DEBUG] NetworkClient::disconnect() - heartbeatThread joined and reset." << std::endl;
+    } else {
+        std::cout << "[DEBUG] NetworkClient::disconnect() - heartbeatThread not joinable." << std::endl;
+    }
+    
     std::cout << "已断开与服务器的连接" << std::endl;
     
-    // 调用断开连接回调
-    if (disconnectCallback) {
-        disconnectCallback();
-    }
+
+    std::cout << "[DEBUG] NetworkClient::disconnect() finished." << std::endl;
 }
 
 void NetworkClient::receiveMessages() {
@@ -109,7 +155,18 @@ void NetworkClient::receiveMessages() {
         
         if (message.type == MessageType::ERROR) {
             std::cerr << "接收消息错误，断开连接" << std::endl;
+            running = false; // Signal to stop the loop
             break;
+        }
+        
+        // 处理连接确认消息
+        if (message.type == MessageType::CONNECT_RESPONSE && message.data == "OK") {
+            connectResponseReceived = true;
+            // 调用连接回调
+            if (connectCallback) {
+                connectCallback();
+            }
+            continue; // 不调用messageCallback，因为这是内部消息
         }
         
         // 处理心跳响应
@@ -121,13 +178,6 @@ void NetworkClient::receiveMessages() {
         if (messageCallback) {
             messageCallback(message);
         }
-    }
-    
-    connected = false;
-    
-    // 调用断开连接回调
-    if (disconnectCallback) {
-        disconnectCallback();
     }
 }
 

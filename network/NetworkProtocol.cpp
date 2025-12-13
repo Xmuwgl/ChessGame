@@ -6,21 +6,18 @@ namespace chessgame::network {
 
 std::string NetworkMessage::serialize() const {
     std::ostringstream oss;
-    oss << static_cast<int>(type) << ":" << data.length() << ":" << data;
+    oss << static_cast<int>(type) << ":" << data;
     return oss.str();
 }
 
 NetworkMessage NetworkMessage::deserialize(const std::string& str) {
     size_t pos1 = str.find(':');
-    size_t pos2 = str.find(':', pos1 + 1);
     
-    if (pos1 == std::string::npos || pos2 == std::string::npos) {
+    if (pos1 == std::string::npos)
         return NetworkMessage(MessageType::ERROR, "Invalid message format");
-    }
     
     int type = std::stoi(str.substr(0, pos1));
-    size_t length = std::stoull(str.substr(pos1 + 1, pos2 - pos1 - 1));
-    std::string data = str.substr(pos2 + 1, length);
+    std::string data = str.substr(pos1 + 1);
     
     return NetworkMessage(static_cast<MessageType>(type), data);
 }
@@ -33,7 +30,11 @@ std::string NetworkMessage::createLengthPrefix(size_t length) {
 
 size_t NetworkMessage::parseLengthPrefix(const std::string& prefix) {
     if (prefix.length() < 8) return 0;
-    return std::stoull(prefix);
+    try {
+        return std::stoull(prefix);
+    } catch (const std::exception& e) {
+        return 0;
+    }
 }
 
 std::string MoveInfo::serialize() const {
@@ -48,15 +49,9 @@ MoveInfo MoveInfo::deserialize(const std::string& data) {
     
     MoveInfo move;
     
-    if (std::getline(iss, token, ',')) {
-        move.row = std::stoi(token);
-    }
-    if (std::getline(iss, token, ',')) {
-        move.col = std::stoi(token);
-    }
-    if (std::getline(iss, token, ',')) {
-        move.player = static_cast<PieceType>(std::stoi(token));
-    }
+    if (std::getline(iss, token, ',')) move.row = std::stoi(token);
+    if (std::getline(iss, token, ',')) move.col = std::stoi(token);
+    if (std::getline(iss, token, ',')) move.player = static_cast<PieceType>(std::stoi(token));
     
     return move;
 }
@@ -85,11 +80,31 @@ GameStateInfo GameStateInfo::deserialize(const std::string& data) {
     if (std::getline(iss, token, ',')) {
         state.gameStatus = static_cast<GameStatus>(std::stoi(token));
     }
-    if (std::getline(iss, token, ',')) {
-        state.boardState = token;
-    }
+    // 剩余的所有内容都是棋盘状态
+    std::getline(iss, token);
+    state.boardState = token;
     
     return state;
+}
+
+std::string NotifyInfo::serialize() const {
+    return std::to_string(static_cast<int>(notifyType));
+}
+
+NotifyInfo NotifyInfo::deserialize(const std::string& data) {
+    NotifyInfo info;
+    info.notifyType = static_cast<NotifyType>(std::stoi(data));
+    return info;
+}
+
+std::string TimeCountInfo::serialize() const {
+    return std::to_string(timeCount);
+}
+
+TimeCountInfo TimeCountInfo::deserialize(const std::string& data) {
+    TimeCountInfo info;
+    info.timeCount = std::stoi(data);
+    return info;
 }
 
 } // namespace chessgame::network

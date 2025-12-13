@@ -44,6 +44,7 @@ public:
     
     // 消息处理
     void broadcastMessage(const NetworkMessage& message);
+    void broadcastMessageExcept(const NetworkMessage& message, int excludeSocket);
     void sendToClient(int clientSocket, const NetworkMessage& message);
     
     // 回调设置

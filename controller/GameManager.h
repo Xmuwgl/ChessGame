@@ -51,6 +51,21 @@ private:
     bool isHost;
     bool isNetworkGame;
     int networkPlayerType; // 1: 黑棋, 2: 白棋
+    bool gameInitialized = false;
+    
+    // 网络游戏回合管理（参考 GoBang）
+    PieceType selfPieceType;  // 自己的棋子类型
+    int restTime;             // 剩余时间（秒）
+    int selfTotalTimeUsed;    // 自己总用时
+    int opponentTotalTimeUsed;// 对手总用时
+    int undoRestTime;         // 剩余悔棋次数
+    static const int TURN_MAX_TIME = 30;  // 每回合最大时间
+    std::chrono::steady_clock::time_point turnStartTime;  // 回合开始时间
+    
+    // 通知消息处理状态
+    bool readyToQuit;
+    bool readyToUndo;
+    bool readyToLoad;
     
     bool running;
     
@@ -124,12 +139,24 @@ private:
     // 网络相关方法
     void startNetworkServer();
     void connectToServer(const std::string& serverIP);
+    void stopNetworkGame();
+    bool initializeNetworkGame();
     void handleNetworkMessage(int clientSocket, const network::NetworkMessage& message);
     void handleClientMessage(const network::NetworkMessage& message);
     void sendNetworkMove(int row, int col);
     void sendGameState();
     void syncGameState(const network::GameStateInfo& state);
     void handleNetworkDisconnection();
+    std::string getGameTypeName(GameType type);
+    
+    // 网络消息处理（参考 GoBang 的 Operate 方法）
+    void operateNetworkMessage(const network::NetworkMessage& message, PieceType playerState);
+    void notifyMessageHandler(const network::NotifyInfo& notifyInfo, PieceType playerState);
+    void takeTurn();  // 切换回合
+    void timeTick();  // 时间计数
+    void checkTimeout();  // 检查超时
+    void startTurnTimer();  // 开始回合计时
+    void stopTurnTimer();   // 停止回合计时
 
 public:
     GameManager();
@@ -148,4 +175,4 @@ public:
     void handleGameEnd(GameStatus status);
 };
 
-}
+} // namespace chessgame::controller

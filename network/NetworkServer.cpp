@@ -5,6 +5,9 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <fstream>
+#include <ctime>
+#include <chrono>
 
 namespace chessgame::network {
 
@@ -137,12 +140,10 @@ void NetworkServer::acceptConnections() {
         
         // 发送连接确认
         NetworkMessage response(MessageType::CONNECT_RESPONSE, "OK");
-        sendMessage(clientSocket, response);
+        bool sendSuccess = sendMessage(clientSocket, response);
         
         // 调用连接回调
-        if (connectCallback) {
-            connectCallback(clientSocket);
-        }
+        if (connectCallback) connectCallback(clientSocket);
         
         // 启动客户端处理线程
         clientThreads[slot] = std::thread(&NetworkServer::handleClient, this, clientSocket);
@@ -165,7 +166,7 @@ void NetworkServer::handleClient(int clientSocket) {
             continue;
         }
         
-        // 调用消息回调
+        // 调用消息回调（在回调中处理消息转发和游戏逻辑）
         if (messageCallback) {
             messageCallback(clientSocket, message);
         }
@@ -182,7 +183,13 @@ bool NetworkServer::sendMessage(int clientSocket, const NetworkMessage& message)
     std::string fullMessage = lengthPrefix + serialized;
     
     ssize_t sent = send(clientSocket, fullMessage.c_str(), fullMessage.length(), 0);
-    return sent == static_cast<ssize_t>(fullMessage.length());
+    
+    if (sent != static_cast<ssize_t>(fullMessage.length())) {
+        std::cerr << "发送数据失败，期望 " << fullMessage.length() << " 实际 " << sent << std::endl;
+        return false;
+    }
+    
+    return true;
 }
 
 NetworkMessage NetworkServer::receiveMessage(int clientSocket) {
@@ -215,6 +222,7 @@ NetworkMessage NetworkServer::receiveMessage(int clientSocket) {
     }
     
     std::string messageData(messageBuffer, messageLength);
+    // std::cout << "[DEBUG] 收到原始数据: " << messageData << std::endl;
     return NetworkMessage::deserialize(messageData);
 }
 
@@ -231,6 +239,10 @@ void NetworkServer::cleanupClient(int clientSocket) {
     
     close(clientSocket);
     
+    // 向其他客户端广播断开连接消息，同步玩家退出状态
+    NetworkMessage disconnectMsg(MessageType::DISCONNECT, std::to_string(clientSocket));
+    broadcastMessageExcept(disconnectMsg, clientSocket);
+    
     // 调用断开连接回调
     if (disconnectCallback) {
         disconnectCallback(clientSocket);
@@ -241,8 +253,20 @@ void NetworkServer::cleanupClient(int clientSocket) {
 
 void NetworkServer::broadcastMessage(const NetworkMessage& message) {
     std::lock_guard<std::mutex> lock(clientMutex);
+    int sentCount = 0;
     for (int i = 0; i < NetworkConfig::MAX_CONNECTIONS; ++i) {
         if (clientSockets[i] >= 0) {
+            bool success = sendMessage(clientSockets[i], message);
+            if (success) sentCount++;
+        }
+    }
+    std::cout << "Broadcast sent to " << sentCount << " clients" << std::endl;
+}
+
+void NetworkServer::broadcastMessageExcept(const NetworkMessage& message, int excludeSocket) {
+    std::lock_guard<std::mutex> lock(clientMutex);
+    for (int i = 0; i < NetworkConfig::MAX_CONNECTIONS; ++i) {
+        if (clientSockets[i] >= 0 && clientSockets[i] != excludeSocket) {
             sendMessage(clientSockets[i], message);
         }
     }

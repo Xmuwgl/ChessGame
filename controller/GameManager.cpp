@@ -1,3 +1,4 @@
+
 #include "GameManager.h"
 #include <iostream>
 #include <sstream>
@@ -7,12 +8,19 @@
 #include <filesystem>
 #include <iomanip>
 #include <cstring>
+#include <cmath>
+#include <fstream>
+#include <ctime>
 
 using namespace chessgame::controller;
 
-GameManager::GameManager() : gameMode(GameMode::PVP), running(false), isRecording(false), 
+GameManager::GameManager() : gameMode(GameMode::PVP), isRecording(false), running(false), 
                               leaderboardManager(&accountManager), isHost(false), 
-                              isNetworkGame(false), networkPlayerType(0) {
+                              isNetworkGame(false), networkPlayerType(0),
+                              selfPieceType(BLACK), restTime(TURN_MAX_TIME),
+                              selfTotalTimeUsed(0), opponentTotalTimeUsed(0),
+                              undoRestTime(2), readyToQuit(false),
+                              readyToUndo(false), readyToLoad(false) {
     gameFacade = std::make_unique<facade::GameFacade>();
     gameView = std::make_unique<view::ConsoleView>();
 }
@@ -69,14 +77,88 @@ bool GameManager::initializeGame() {
     }
 }
 
+bool GameManager::initializeNetworkGame() {
+    // 设置游戏模式为网络对战
+    gameMode = GameMode::NETWORK;
+    
+    // 选择游戏类型
+    while (true) {
+        std::string typeStr = gameView->getUserInput("请选择游戏类型 (1: 五子棋, 2: 围棋, 3: 黑白棋): ");
+        if (typeStr == "1" || typeStr == "2" || typeStr == "3") {
+            GameType type;
+            if (typeStr == "1") {
+                type = GOMOKU;
+            } else if (typeStr == "2") {
+                type = GO;
+            } else {
+                type = OTHELLO;
+            }
+            
+            // 设置棋盘大小
+            int boardSize = 0;
+            while (true) {
+                std::string sizeStr = gameView->getUserInput("请输入棋盘大小 (8-19): ");
+                try {
+                    boardSize = std::stoi(sizeStr);
+                    if (boardSize >= 8 && boardSize <= 19) break;
+                } catch(...) {
+                    gameView->showError("输入无效, 请重新输入.");
+                }
+            }
+            
+            // 初始化游戏
+            if (gameFacade->initGame(type, boardSize)) {
+                // 设置网络玩家类型（主机是黑棋）
+                networkPlayerType = 1;
+                selfPieceType = BLACK;
+                restTime = TURN_MAX_TIME;
+                undoRestTime = 2;
+                selfTotalTimeUsed = 0;
+                opponentTotalTimeUsed = 0;
+                readyToQuit = false;
+                readyToUndo = false;
+                readyToLoad = false;
+                return true;
+            } else {
+                gameView->showError("游戏初始化失败!");
+            }
+        } else {
+            gameView->showError("输入无效, 请输入 1、2 或 3.");
+        }
+    }
+}
+
+std::string GameManager::getGameTypeName(GameType type) {
+    switch (type) {
+        case GOMOKU: return "五子棋";
+        case GO: return "围棋";
+        case OTHELLO: return "黑白棋";
+        default: return "未知游戏";
+    }
+}
+
 void GameManager::networkGameLoop() {
+    // 开始第一回合的计时（如果是自己的回合）
+    if (gameFacade->getCurrentPlayer() == selfPieceType) {
+        startTurnTimer();
+    }
+    
     while (isNetworkGame && gameFacade->getGameStatus() == IN_PROGRESS) {
-        // 显示当前棋盘状态
+        bool skipEndBroadcast = false;
+        // 更新时间计数
+        timeTick();
+        
+        // 显示当前棋盘状态（包含剩余时间信息）
+        std::string timeInfo = "";
+        if (gameFacade->getCurrentPlayer() == selfPieceType) {
+            timeInfo = "剩余时间: " + std::to_string(restTime) + "秒";
+        }
+        
         gameView->displayBoard(
             gameFacade->getBoard(),
             gameFacade->getCurrentPlayer(),
             gameFacade->getGameType(),
-            "",
+            timeInfo,
             getPlayerName(BLACK),
             getPlayerName(WHITE),
             getPlayerStats(BLACK),
@@ -84,70 +166,107 @@ void GameManager::networkGameLoop() {
         );
         
         // 检查是否轮到当前玩家
-        bool isMyTurn = false;
-        if (networkPlayerType == 1 && gameFacade->getCurrentPlayer() == BLACK) {
-            isMyTurn = true;
-        } else if (networkPlayerType == 2 && gameFacade->getCurrentPlayer() == WHITE) {
-            isMyTurn = true;
-        }
+        bool isMyTurn = (gameFacade->getCurrentPlayer() == selfPieceType);
         
         if (isMyTurn) {
             // 获取用户输入
-            std::string input = gameView->getUserInput("请输入坐标 (格式: x,y) 或 'quit' 退出: ");
+            std::string input = gameView->getUserInput("请输入坐标 (格式: x,y) 或命令 (undo/quit/pass/resign): ");
             
             // 清理输入：去除前后空白字符
             input.erase(0, input.find_first_not_of(" \t\r\n"));
             input.erase(input.find_last_not_of(" \t\r\n") + 1);
             
             if (input == "quit") {
-                handleNetworkDisconnection();
-                break;
+                // 发送退出请求
+                network::NotifyInfo quitNotify{network::NotifyType::QUIT};
+                network::NetworkMessage quitMsg(network::MessageType::NOTIFY, quitNotify.serialize());
+                operateNetworkMessage(quitMsg, selfPieceType);
+                continue;
+            } else if (input == "undo") {
+                // 发送悔棋请求
+                if (undoRestTime > 0) {
+                    network::NotifyInfo undoNotify{network::NotifyType::UNDO};
+                    network::NetworkMessage undoMsg(network::MessageType::NOTIFY, undoNotify.serialize());
+                    operateNetworkMessage(undoMsg, selfPieceType);
+                } else {
+                    gameView->showError("悔棋次数已用完！");
+                }
+                continue;
             }
             
             // 解析移动命令
             std::unique_ptr<Command> command = parseCommand(input);
             if (command) {
+                // 在执行命令之前提取坐标信息（因为executeCommand会move command）
+                int moveRow = -1, moveCol = -1;
+                bool isMoveCmd = false;
+                bool isPassCmd = false;
+                bool isResignCmd = false;
+                
+                MoveCommand* moveCmd = dynamic_cast<MoveCommand*>(command.get());
+                if (moveCmd) {
+                    moveRow = moveCmd->getX();
+                    moveCol = moveCmd->getY();
+                    isMoveCmd = true;
+                } else {
+                    PassCommand* passCmd = dynamic_cast<PassCommand*>(command.get());
+                    ResignCommand* resignCmd = dynamic_cast<ResignCommand*>(command.get());
+                    if (passCmd) {
+                        isPassCmd = true;
+                    } else if (resignCmd) {
+                        isResignCmd = true;
+                    }
+                }
+                
                 // 执行命令
                 if (executeCommand(std::move(command))) {
                     // 发送移动信息到网络
-                    // 这里需要从命令中提取坐标信息
-                    // 简化处理：重新解析输入
-                    std::istringstream iss(input);
-                    std::string token;
-                    int row = -1, col = -1;
-                    
-                    if (std::getline(iss, token, ',')) {
-                        row = std::stoi(token);
-                    }
-                    if (std::getline(iss, token, ',')) {
-                        col = std::stoi(token);
-                    }
-                    
-                    if (row >= 0 && col >= 0) {
-                        sendNetworkMove(row, col);
+                    if (isMoveCmd) {
+                        sendNetworkMove(moveRow, moveCol);
+                    } else if (isPassCmd) {
+                        network::NetworkMessage passMsg(network::MessageType::PASS, "");
+                        // 发送消息
+                        if (isHost && networkServer) {
+                            networkServer->broadcastMessage(passMsg);
+                        } else if (!isHost && networkClient) {
+                            networkClient->sendMessage(passMsg);
+                        }
+                        // 处理消息
+                        operateNetworkMessage(passMsg, selfPieceType);
+                    } else if (isResignCmd) {
+                        network::NetworkMessage resignMsg(network::MessageType::RESIGN, "");
+                        // 发送消息
+                        if (isHost && networkServer) {
+                            networkServer->broadcastMessage(resignMsg);
+                        } else if (!isHost && networkClient) {
+                            networkClient->sendMessage(resignMsg);
+                        }
+                        // 处理消息
+                        operateNetworkMessage(resignMsg, selfPieceType);
+                        skipEndBroadcast = true;
                     }
                 }
             } else {
-                gameView->showError("无效的输入格式! 请使用 x,y 格式");
+                gameView->showError("无效的输入格式! 请使用 x,y 格式或命令");
             }
         } else {
-            // 不是我的回合，等待网络消息
+            // 不是我的回合，检查并处理网络消息
+            // 注意：消息处理已经在回调函数中完成，这里只需要等待
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
         
         // 检查游戏状态
         GameStatus status = gameFacade->getGameStatus();
         if (status != IN_PROGRESS) {
-            // 发送游戏结束消息
-            network::NetworkMessage endMsg(network::MessageType::GAME_END, std::to_string(static_cast<int>(status)));
-            
-            if (isHost && networkServer) {
-                networkServer->broadcastMessage(endMsg);
-            } else if (!isHost && networkClient) {
-                networkClient->sendMessage(endMsg);
+            if (!skipEndBroadcast) {
+                network::NetworkMessage endMsg(network::MessageType::GAME_END, std::to_string(static_cast<int>(status)));
+                if (isHost && networkServer) {
+                    networkServer->broadcastMessage(endMsg);
+                } else if (!isHost && networkClient) {
+                    networkClient->sendMessage(endMsg);
+                }
+                handleGameEnd(status);
             }
-            
-            handleGameEnd(status);
             break;
         }
     }
@@ -428,8 +547,12 @@ std::unique_ptr<Command> GameManager::parseCommand(const std::string& input) {
     } else {
         // 尝试解析为坐标
         try {
+            // 处理逗号分隔的坐标
+            std::string tempInput = input;
+            std::replace(tempInput.begin(), tempInput.end(), ',', ' ');
+            
             int x, y;
-            std::istringstream coordStream(input);
+            std::istringstream coordStream(tempInput);
             if (coordStream >> x >> y) {
                 // 转换为0索引
                 x--;
@@ -706,6 +829,12 @@ void GameManager::restartGame() {
 
 void GameManager::quitGame() {
     running = false;
+    if (isNetworkGame) {
+        if (networkClient) {
+            networkClient->disconnect();
+        }
+        handleNetworkDisconnection();
+    }
 }
 
 bool GameManager::initializeGameMode() {
@@ -1221,24 +1350,19 @@ void GameManager::startNetworkServer() {
     
     networkServer->setConnectCallback([this](int clientSocket) {
         std::cout << "玩家已连接，准备开始游戏" << std::endl;
-        // 分配连接的玩家为白棋
-        networkPlayerType = 1; // 主机是黑棋
+        // 等待一小段时间，确保客户端接收线程已启动
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
         
-        // 初始化游戏（如果还没有初始化）
-        if (!gameFacade) {
-            gameFacade = std::make_unique<facade::GameFacade>();
-        }
-        
-        // 发送游戏开始消息
+        // 发送游戏开始消息（告知客户端是白棋）
         network::NetworkMessage startMsg(network::MessageType::GAME_START, "WHITE");
         networkServer->sendToClient(clientSocket, startMsg);
         
-        // 发送当前游戏状态
+        // 发送当前游戏状态（包含游戏类型、棋盘大小和棋盘状态）
         sendGameState();
     });
     
     networkServer->setDisconnectCallback([this](int clientSocket) {
-        std::cout << "玩家断开连接" << std::endl;
+        std::cout << "玩家 " << clientSocket << " 断开连接" << std::endl;
         handleNetworkDisconnection();
     });
     
@@ -1247,6 +1371,14 @@ void GameManager::startNetworkServer() {
         isNetworkGame = true;
         gameMode = GameMode::NETWORK;
         networkPlayerType = 1; // 主机是黑棋
+        selfPieceType = BLACK;
+        restTime = TURN_MAX_TIME;
+        undoRestTime = 2;
+        selfTotalTimeUsed = 0;
+        opponentTotalTimeUsed = 0;
+        readyToQuit = false;
+        readyToUndo = false;
+        readyToLoad = false;
         
         std::cout << "网络服务器已启动，等待玩家连接..." << std::endl;
         std::cout << "其他玩家可以通过以下IP地址连接：" << std::endl;
@@ -1279,6 +1411,14 @@ void GameManager::connectToServer(const std::string& serverIP) {
         isNetworkGame = true;
         gameMode = GameMode::NETWORK;
         networkPlayerType = 2; // 客户端是白棋
+        selfPieceType = WHITE;
+        restTime = TURN_MAX_TIME;
+        undoRestTime = 2;
+        selfTotalTimeUsed = 0;
+        opponentTotalTimeUsed = 0;
+        readyToQuit = false;
+        readyToUndo = false;
+        readyToLoad = false;
         
         std::cout << "已连接到服务器: " << serverIP << std::endl;
     } else {
@@ -1288,54 +1428,52 @@ void GameManager::connectToServer(const std::string& serverIP) {
 }
 
 void GameManager::handleNetworkMessage(int clientSocket, const network::NetworkMessage& message) {
-    switch (message.type) {
-        case network::MessageType::MOVE: {
-            network::MoveInfo moveInfo = network::MoveInfo::deserialize(message.data);
-            
-            // 执行对手的移动
-            if (gameFacade->makeMove(moveInfo.row, moveInfo.col, moveInfo.player)) {
-                // 同步游戏状态
-                sendGameState();
-                
-                // 显示更新后的棋盘
-                gameView->displayBoard(
-                    gameFacade->getBoard(),
-                    gameFacade->getCurrentPlayer(),
-                    gameFacade->getGameType(),
-                    "",
-                    getPlayerName(BLACK),
-                    getPlayerName(WHITE),
-                    getPlayerStats(BLACK),
-                    getPlayerStats(WHITE)
-                );
-                
-                // 检查游戏是否结束
-                GameStatus status = gameFacade->getGameStatus();
-                if (status != IN_PROGRESS) {
-                    handleGameEnd(status);
-                }
-            }
-            break;
-        }
-        
-        case network::MessageType::DISCONNECT:
-            std::cout << "对手断开连接" << std::endl;
-            handleNetworkDisconnection();
-            break;
-            
-        default:
-            break;
+    // 确定消息来源的玩家状态（服务器是黑棋，客户端是白棋）
+    PieceType opponentState = (selfPieceType == BLACK) ? WHITE : BLACK;
+    
+    // 对于MOVE消息，需要先转发给其他客户端，然后再处理
+    if (message.type == network::MessageType::MOVE && networkServer) {
+        // 转发给其他客户端（不包括发送者）
+        networkServer->broadcastMessageExcept(message, clientSocket);
+    }
+    
+    // 使用 operateNetworkMessage 处理消息
+    operateNetworkMessage(message, opponentState);
+    
+    if (message.type == network::MessageType::DISCONNECT) {
+        std::cout << "对手断开连接" << std::endl;
+        handleNetworkDisconnection();
     }
 }
 
 void GameManager::handleClientMessage(const network::NetworkMessage& message) {
+    std::cerr << "[DEBUG CLIENT] handleClientMessage: msgType=" << static_cast<int>(message.type) << ", data=" << message.data.substr(0, 50) << std::endl;
+    // #region agent log
+    {
+        std::ofstream logFile("/mnt/data/wgl/.cursor/debug.log", std::ios::app);
+        if (logFile.is_open()) {
+            logFile << "{\"id\":\"log_" << std::time(nullptr) << "_clientmsg\",\"timestamp\":" << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() << ",\"location\":\"GameManager.cpp:handleClientMessage\",\"message\":\"handleClientMessage called\",\"data\":{\"msgType\":" << static_cast<int>(message.type) << ",\"data\":\"" << message.data.substr(0, 50) << "\"},\"sessionId\":\"debug-session\",\"runId\":\"run1\",\"hypothesisId\":\"C\"}\n";
+            logFile.flush();
+            logFile.close();
+        }
+    }
+    // #endregion
+    
     switch (message.type) {
         case network::MessageType::GAME_START: {
             // 确定自己的棋子颜色
             if (message.data == "WHITE") {
                 networkPlayerType = 2; // 客户端是白棋
+                selfPieceType = WHITE;
             } else {
                 networkPlayerType = 1; // 客户端是黑棋
+                selfPieceType = BLACK;
+            }
+            
+            // 初始化游戏（使用默认设置，具体设置将在BOARD_SYNC中更新）
+            if (!gameInitialized) {
+                gameFacade->initGame(GOMOKU, 15); // 临时初始化，将在syncGameState中更新
+                gameInitialized = true;
             }
             break;
         }
@@ -1346,33 +1484,44 @@ void GameManager::handleClientMessage(const network::NetworkMessage& message) {
             break;
         }
         
-        case network::MessageType::GAME_END: {
-            GameStatus status = static_cast<GameStatus>(std::stoi(message.data));
-            handleGameEnd(status);
+        default: {
+            // 确定消息来源的玩家状态（服务器是黑棋，客户端是白棋）
+            PieceType opponentState = (selfPieceType == BLACK) ? WHITE : BLACK;
+            
+            // 使用 operateNetworkMessage 处理消息
+            operateNetworkMessage(message, opponentState);
             break;
         }
-        
-        case network::MessageType::DISCONNECT:
-            std::cout << "服务器断开连接" << std::endl;
-            handleNetworkDisconnection();
-            break;
-            
-        default:
-            break;
+    }
+    
+    if (message.type == network::MessageType::DISCONNECT) {
+        std::cout << "服务器断开连接" << std::endl;
+        // handleNetworkDisconnection(); // 由 networkClient->disconnect() 的回调处理
     }
 }
 
 void GameManager::sendNetworkMove(int row, int col) {
-    if (!isNetworkGame) return;
+    if (!isNetworkGame) {
+        return;
+    }
     
-    network::MoveInfo moveInfo{row, col, gameFacade->getCurrentPlayer()};
+    // 获取执行移动的玩家（当前玩家，因为移动后才会切换）
+    PieceType movingPlayer = selfPieceType;
+    
+    network::MoveInfo moveInfo{row, col, movingPlayer};
     network::NetworkMessage moveMsg(network::MessageType::MOVE, moveInfo.serialize());
     
+    // 发送消息到网络
+    bool sendSuccess = false;
     if (isHost && networkServer) {
         networkServer->broadcastMessage(moveMsg);
+        sendSuccess = true;
     } else if (!isHost && networkClient) {
-        networkClient->sendMessage(moveMsg);
+        sendSuccess = networkClient->sendMessage(moveMsg);
     }
+    
+    // 处理消息（切换回合等）
+    operateNetworkMessage(moveMsg, selfPieceType);
 }
 
 void GameManager::sendGameState() {
@@ -1412,11 +1561,30 @@ void GameManager::syncGameState(const network::GameStateInfo& stateInfo) {
     // 恢复游戏类型
     gameFacade->setGameType(stateInfo.gameType);
     
-    // 恢复棋盘状态
+    // 计算棋盘大小（从序列化的棋盘状态推断）
     std::istringstream boardStream(stateInfo.boardState);
     std::string cell;
+    int boardSize = 0;
+    
+    // 计算行数来确定棋盘大小
+    std::string tempLine = stateInfo.boardState;
+    size_t pos = 0;
+    while ((pos = tempLine.find(',')) != std::string::npos) {
+        boardSize++;
+        tempLine.erase(0, pos + 1);
+    }
+    boardSize++; // 最后一项没有逗号
+    
+    // 计算实际棋盘大小（平方根）
+    int size = static_cast<int>(std::sqrt(boardSize));
+    
+    // 重新初始化棋盘以确保大小正确
+    gameFacade->initGame(stateInfo.gameType, size);
+    
+    // 恢复棋盘状态
+    boardStream.clear();
+    boardStream.str(stateInfo.boardState);
     auto& board = gameFacade->getBoard();
-    int size = board.getSize();
     
     for (int i = 0; i < size; ++i) {
         for (int j = 0; j < size; ++j) {
@@ -1443,24 +1611,272 @@ void GameManager::syncGameState(const network::GameStateInfo& stateInfo) {
 void GameManager::handleNetworkDisconnection() {
     isNetworkGame = false;
     
-    if (networkServer) {
+    // 只有当服务器主动停止时才停止服务器，而不是因为某个客户端断开连接
+    if (isHost && networkServer) {
         networkServer->stop();
         networkServer.reset();
     }
     
     if (networkClient) {
-        networkClient->disconnect();
+        // 先清除回调指针，避免重入调用
+        networkClient->setDisconnectCallback(nullptr);
         networkClient.reset();
     }
     
     std::cout << "网络游戏已结束" << std::endl;
 }
 
+// 网络消息处理（参考 GoBang 的 Operate 方法）
+void GameManager::operateNetworkMessage(const network::NetworkMessage& message, PieceType playerState) {
+    // 参考GoBang：如果是自己的操作，先发送消息到网络
+    // 注意：MOVE消息在sendNetworkMove中已经发送，这里不需要重复发送
+    // PASS和RESIGN消息在networkGameLoop中已经发送
+    // 只有NOTIFY、TIMECOUNT等消息需要在这里发送
+    if (playerState == selfPieceType) {
+        if (message.type == network::MessageType::MOVE) {
+            // MOVE消息已经在sendNetworkMove中发送，这里不需要重复发送
+        } else if (message.type == network::MessageType::PASS || 
+                   message.type == network::MessageType::RESIGN) {
+            // PASS和RESIGN消息在networkGameLoop中已经发送
+        } else {
+            // 其他消息（NOTIFY、TIMECOUNT等）需要发送
+            if (isHost && networkServer) {
+                networkServer->broadcastMessage(message);
+            } else if (!isHost && networkClient) {
+                networkClient->sendMessage(message);
+            }
+        }
+    }
+    
+    // 处理消息
+    switch (message.type) {
+        case network::MessageType::MOVE: {
+            network::MoveInfo moveInfo = network::MoveInfo::deserialize(message.data);
+            
+            // 只有对手的消息才需要执行移动（自己的移动已经在executeCommand中执行了）
+            if (playerState != selfPieceType) {
+                // 执行对手的移动（makeMove会自动切换当前玩家）
+                if (gameFacade->makeMove(moveInfo.row, moveInfo.col, moveInfo.player)) {
+                    // 显示更新后的棋盘
+                    gameView->displayBoard(
+                        gameFacade->getBoard(),
+                        gameFacade->getCurrentPlayer(),
+                        gameFacade->getGameType(),
+                        "",
+                        getPlayerName(BLACK),
+                        getPlayerName(WHITE),
+                        getPlayerStats(BLACK),
+                        getPlayerStats(WHITE)
+                    );
+                    
+                    // 检查游戏是否结束
+                    GameStatus status = gameFacade->getGameStatus();
+                    if (status != IN_PROGRESS) {
+                        handleGameEnd(status);
+                    } else {
+                        // makeMove已经切换了当前玩家，这里只需要重置悔棋次数和计时器
+                        undoRestTime = 2;
+                        restTime = TURN_MAX_TIME;
+                        // 如果是自己的回合，开始计时
+                        if (gameFacade->getCurrentPlayer() == selfPieceType) {
+                            startTurnTimer();
+                        }
+                    }
+                }
+            } else {
+                // 自己的移动已经在executeCommand中执行，makeMove已经切换了当前玩家
+                // 这里只需要重置悔棋次数和计时器
+                undoRestTime = 2;
+                restTime = TURN_MAX_TIME;
+                // 如果是自己的回合，开始计时（但通常自己的移动后，当前玩家已经切换为对手）
+                if (gameFacade->getCurrentPlayer() == selfPieceType) {
+                    startTurnTimer();
+                }
+            }
+            break;
+        }
+        
+        case network::MessageType::NOTIFY: {
+            network::NotifyInfo notifyInfo = network::NotifyInfo::deserialize(message.data);
+            notifyMessageHandler(notifyInfo, playerState);
+            break;
+        }
+        
+        case network::MessageType::TIMECOUNT: {
+            network::TimeCountInfo timeInfo = network::TimeCountInfo::deserialize(message.data);
+            if (playerState == selfPieceType) {
+                selfTotalTimeUsed += timeInfo.timeCount;
+            } else {
+                opponentTotalTimeUsed += timeInfo.timeCount;
+            }
+            break;
+        }
+        
+        case network::MessageType::PASS: {
+            PieceType currentPlayer = gameFacade->getCurrentPlayer();
+            if (gameFacade->passMove(currentPlayer)) {
+                takeTurn();
+            }
+            break;
+        }
+        
+        case network::MessageType::RESIGN: {
+            PieceType currentPlayer = gameFacade->getCurrentPlayer();
+            gameFacade->resign(currentPlayer);
+            handleGameEnd(gameFacade->getGameStatus());
+            break;
+        }
+        
+        default:
+            break;
+    }
+}
+
+void GameManager::notifyMessageHandler(const network::NotifyInfo& notifyInfo, PieceType playerState) {
+    switch (notifyInfo.notifyType) {
+        case network::NotifyType::TIMEOUT:
+            if (playerState == selfPieceType) gameView->showError("时间到！");
+
+            takeTurn();
+            break;
+            
+        case network::NotifyType::UNDO:
+            if (undoRestTime <= 0) {
+                break;
+            }
+            readyToUndo = true;
+            if (playerState != selfPieceType) {
+                // 对手请求悔棋，询问是否同意
+                std::string response = gameView->getUserInput("对手请求悔棋，是否同意？(y/n): ");
+                if (response == "y" || response == "Y") {
+                    network::NotifyInfo yesNotify{network::NotifyType::YES};
+                    network::NetworkMessage yesMsg(network::MessageType::NOTIFY, yesNotify.serialize());
+                    operateNetworkMessage(yesMsg, selfPieceType);
+                } else {
+                    network::NotifyInfo noNotify{network::NotifyType::NO};
+                    network::NetworkMessage noMsg(network::MessageType::NOTIFY, noNotify.serialize());
+                    operateNetworkMessage(noMsg, selfPieceType);
+                }
+            } else {
+                // 自己请求悔棋，等待响应
+                gameView->showMessage("等待对手响应悔棋请求...");
+            }
+            break;
+            
+        case network::NotifyType::QUIT:
+            if (playerState != selfPieceType) {
+                // 对手请求退出
+                std::string response = gameView->getUserInput("对手请求退出游戏，是否同意？(y/n): ");
+                if (response == "y" || response == "Y") {
+                    network::NotifyInfo yesNotify{network::NotifyType::YES};
+                    network::NetworkMessage yesMsg(network::MessageType::NOTIFY, yesNotify.serialize());
+                    operateNetworkMessage(yesMsg, selfPieceType);
+                } else {
+                    network::NotifyInfo noNotify{network::NotifyType::NO};
+                    network::NetworkMessage noMsg(network::MessageType::NOTIFY, noNotify.serialize());
+                    operateNetworkMessage(noMsg, selfPieceType);
+                }
+            } else {
+                // 自己请求退出，等待响应
+                gameView->showMessage("等待对手响应退出请求...");
+            }
+            readyToQuit = true;
+            break;
+            
+        case network::NotifyType::YES:
+            if (playerState != selfPieceType) {
+                gameView->showMessage("对手同意了你的请求");
+            }
+            if (readyToQuit) {
+                readyToQuit = false;
+                handleNetworkDisconnection();
+            }
+            if (readyToUndo) {
+                readyToUndo = false;
+                undoRestTime--;
+                // 执行悔棋（需要实现撤销上一步的功能）
+                // 这里简化处理，实际需要保存历史记录
+                gameView->showMessage("悔棋成功");
+            }
+            if (readyToLoad) {
+                readyToLoad = false;
+                if (playerState != selfPieceType) {
+                    gameView->showMessage("对手同意加载游戏");
+                }
+            }
+            break;
+            
+        case network::NotifyType::NO:
+            if (playerState != selfPieceType) {
+                gameView->showMessage("对手拒绝了你的请求");
+            }
+            readyToQuit = false;
+            readyToUndo = false;
+            readyToLoad = false;
+            break;
+            
+        default:
+            break;
+    }
+}
+
+void GameManager::takeTurn() {
+    undoRestTime = 2;  // 重置悔棋次数（每回合可以悔棋）
+    stopTurnTimer();
+    
+    // 如果刚才是自己的回合，记录使用的时间
+    if (gameFacade->getCurrentPlayer() == selfPieceType) {
+        int timeUsed = TURN_MAX_TIME - restTime;
+        network::TimeCountInfo timeInfo{timeUsed};
+        network::NetworkMessage timeMsg(network::MessageType::TIMECOUNT, timeInfo.serialize());
+        operateNetworkMessage(timeMsg, selfPieceType);
+    }
+    
+    // 切换当前玩家
+    PieceType currentPlayer = gameFacade->getCurrentPlayer();
+    gameFacade->setCurrentPlayer(currentPlayer == BLACK ? WHITE : BLACK);
+    
+    restTime = TURN_MAX_TIME;
+    
+    // 如果是自己的回合，开始计时
+    if (gameFacade->getCurrentPlayer() == selfPieceType) startTurnTimer();
+}
+
+void GameManager::startTurnTimer() {
+    turnStartTime = std::chrono::steady_clock::now();
+}
+
+void GameManager::stopTurnTimer() {
+    // 计算已用时间
+    auto now = std::chrono::steady_clock::now();
+    auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - turnStartTime).count();
+    restTime = TURN_MAX_TIME - static_cast<int>(elapsed);
+    if (restTime < 0) restTime = 0;
+}
+
+void GameManager::checkTimeout() {
+    if (restTime <= 0 && gameFacade->getCurrentPlayer() == selfPieceType) {
+        network::NotifyInfo timeoutNotify{network::NotifyType::TIMEOUT};
+        network::NetworkMessage timeoutMsg(network::MessageType::NOTIFY, timeoutNotify.serialize());
+        operateNetworkMessage(timeoutMsg, selfPieceType);
+    }
+}
+
+void GameManager::timeTick() {
+    if (gameFacade->getCurrentPlayer() == selfPieceType) {
+        auto now = std::chrono::steady_clock::now();
+        auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - turnStartTime).count();
+        restTime = TURN_MAX_TIME - static_cast<int>(elapsed);
+        
+        if (restTime <= 0) checkTimeout();
+    }
+}
+
 void GameManager::showNetworkMenu() {
     while (true) {
         gameView->showMessage("\n===== 网络对战 =====");
-        gameView->showMessage("1. 创建游戏房间（主机）");
-        gameView->showMessage("2. 加入游戏房间（客户端）");
+        gameView->showMessage("1. 创建游戏房间 (房主)");
+        gameView->showMessage("2. 加入游戏房间 (客户端)");
         gameView->showMessage("3. 返回主菜单");
         
         std::string choice = gameView->getUserInput("请选择: ");
@@ -1470,11 +1886,19 @@ void GameManager::showNetworkMenu() {
         choice.erase(choice.find_last_not_of(" \t\r\n") + 1);
         
         if (choice == "1") {
-            // 创建游戏房间
+            // 创建游戏房间 - 先选择游戏设置
+            if (!initializeNetworkGame()) {
+                continue;
+            }
+            
+            // 启动网络服务器
             startNetworkServer();
             if (isNetworkGame) {
                 // 等待玩家连接
                 gameView->showMessage("等待其他玩家连接...");
+                gameView->showMessage("游戏设置: " + getGameTypeName(gameFacade->getGameType()) + 
+                                    " (" + std::to_string(gameFacade->getBoard().getSize()) + "x" + 
+                                    std::to_string(gameFacade->getBoard().getSize()) + ")");
                 
                 // 简单的等待循环，实际应用中可以添加超时机制
                 while (isNetworkGame && networkServer && networkServer->getConnectedClientCount() == 0) {
@@ -1482,13 +1906,7 @@ void GameManager::showNetworkMenu() {
                 }
                 
                 if (isNetworkGame && networkServer && networkServer->getConnectedClientCount() > 0) {
-                    // 玩家已连接，初始化游戏
-                    if (!initializeGame()) {
-                        handleNetworkDisconnection();
-                        continue;
-                    }
-                    
-                    // 网络游戏主循环
+                    // 玩家已连接，开始网络游戏
                     networkGameLoop();
                 }
             }

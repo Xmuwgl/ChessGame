@@ -20,16 +20,35 @@ enum class MessageType {
     // 游戏操作
     MOVE = 3001,
     MOVE_RESPONSE = 3002,
-    GAME_END = 3003,
+    PASS = 3003,
+    RESIGN = 3004,
+    GAME_END = 3005,
     
     // 状态同步
     BOARD_SYNC = 4001,
     CURRENT_PLAYER_SYNC = 4002,
     GAME_STATUS_SYNC = 4003,
     
+    // 通知消息（参考 GoBang）
+    NOTIFY = 5001,
+    TIMECOUNT = 5002,
+    LOAD = 5003,
+    CHAT = 5004,
+    
     // 错误处理
-    ERROR = 5001,
-    HEARTBEAT = 5002
+    ERROR = 6001,
+    HEARTBEAT = 6002
+};
+
+// 通知类型（参考 GoBang）
+enum class NotifyType {
+    NONE = 0,
+    TIMEOUT = 1,    // 超时
+    UNDO = 2,       // 悔棋请求
+    QUIT = 3,       // 退出请求
+    YES = 4,        // 同意
+    NO = 5,         // 拒绝
+    QLOAD = 6       // 请求加载
 };
 
 // 网络消息结构
@@ -73,9 +92,25 @@ struct GameStateInfo {
     static GameStateInfo deserialize(const std::string& data);
 };
 
+// 通知消息信息
+struct NotifyInfo {
+    NotifyType notifyType;
+    
+    std::string serialize() const;
+    static NotifyInfo deserialize(const std::string& data);
+};
+
+// 时间计数信息
+struct TimeCountInfo {
+    int timeCount;  // 使用的时间（秒）
+    
+    std::string serialize() const;
+    static TimeCountInfo deserialize(const std::string& data);
+};
+
 // 网络配置
 struct NetworkConfig {
-    static const int DEFAULT_PORT = 12345;
+    static const int DEFAULT_PORT = 12346;
     static const int MAX_CONNECTIONS = 2;
     static const int BUFFER_SIZE = 4096;
     static const int HEARTBEAT_INTERVAL = 30; // 秒

@@ -11,7 +11,8 @@ using namespace chessgame::model;
 
 GameFacade::GameFacade() 
     : currentPlayer(BLACK), gameType(GOMOKU), gameStatus(IN_PROGRESS), 
-      passCount(0), caretaker(std::make_unique<GameCaretaker>()) {
+      passCount(0), board(std::make_unique<Board>(15)), caretaker(std::make_unique<GameCaretaker>()) {
+    initRule();
 }
 
 void GameFacade::initRule() {
